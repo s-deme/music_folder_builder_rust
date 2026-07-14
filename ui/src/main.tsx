@@ -36,11 +36,33 @@ function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { let offProgress: (() => void) | undefined; let offFinished: (() => void) | undefined;
     void listen<Progress>("scan-progress", event => setProgress(event.payload)).then(off => offProgress = off);
-    void listen<ScanStatus>("scan-finished", event => { const value = event.payload; setScanRequest(value); setBusy(false); if (value.status === "completed" && value.scan_id) setScan({ scan_id: value.scan_id, files: value.files, cache_hits: value.cache_hits, warnings: value.warnings }); if (value.error) setError(value.error); }).then(off => offFinished = off);
+    void listen<ScanStatus>("scan-finished", event => { const value = event.payload; setScanRequest(value); setBusy(false); setProgress(undefined); if (value.status === "completed" && value.scan_id) setScan({ scan_id: value.scan_id, files: value.files, cache_hits: value.cache_hits, warnings: value.warnings }); if (value.error) setError(value.error); }).then(off => offFinished = off);
     return () => { offProgress?.(); offFinished?.(); };
   }, []);
+  useEffect(() => {
+    if (!scanRequest || scanRequest.status !== "running") return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const value = await invoke<ScanStatus>("scan_status", { requestId: scanRequest.request_id });
+        if (stopped) return;
+        setScanRequest(value);
+        if (value.status !== "running") {
+          setBusy(false);
+          setProgress(undefined);
+          if (value.status === "completed" && value.scan_id) setScan({ scan_id: value.scan_id, files: value.files, cache_hits: value.cache_hits, warnings: value.warnings });
+          if (value.error) setError(value.error);
+        }
+      } catch (reason) {
+        if (!stopped && String(reason) !== "scan_not_found") setError(String(reason));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 500);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [scanRequest?.request_id, scanRequest?.status]);
   async function run<T>(work: () => Promise<T>, save: (value: T) => void) { setBusy(true); setError(undefined); try { save(await work()); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } }
-  async function startScan() { setBusy(true); setError(undefined); try { setScanRequest(await invoke("start_scan", { source, database, workers: null })); } catch (reason) { setError(String(reason)); setBusy(false); } }
+  async function startScan() { setBusy(true); setError(undefined); setProgress(undefined); setScan(undefined); setPlan(undefined); try { setScanRequest(await invoke("start_scan", { source, database, workers: null })); } catch (reason) { setError(String(reason)); setBusy(false); } }
   async function loadItems(reset = false) { if (!plan) return; const rows = await invoke<PlanItem[]>("list_plan_items", { database, planId: plan.id, cursor: reset ? undefined : items.at(-1)?.ordinal, limit: 200, query: query || null, risk: risk || null }); setItems(reset ? rows : [...items, ...rows]); if (reset) planRef.current?.scrollTo({ top: 0 }); }
   async function loadLogs(reset = false) { if (!executionId) return; const rows = await invoke<Log[]>("list_operation_logs", { database, executionId, cursor: reset ? undefined : logs.at(-1)?.sequence_no, limit: 200, query: logQuery || null, result: logResult || null }); setLogs(reset ? rows : [...logs, ...rows]); if (reset) { logRef.current?.scrollTo({ top: 0 }); setMetrics(await invoke("list_metrics", { database, runId: executionId })); } }
   async function loadHistory(reset = false) { const rows = await invoke<History[]>("list_history", { database, limit: 100, cursor: reset ? null : history.at(-1)?.started_at }); setHistory(reset ? rows : [...history, ...rows]); }
