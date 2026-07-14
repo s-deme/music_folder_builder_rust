@@ -54,7 +54,9 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - run: npm --prefix ui ci
       - run: npm --prefix ui run build
-      - run: npm --prefix ui exec --yes --package @tauri-apps/cli tauri build -- --config crates/desktop/tauri.conf.json
+      - name: Build Windows bundle
+        working-directory: crates/desktop
+        run: npm --prefix ../../ui exec --yes --package @tauri-apps/cli tauri build
       - uses: actions/upload-artifact@v4
         with:
           name: music-folder-desktop-windows
