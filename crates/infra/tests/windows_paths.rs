@@ -36,11 +36,18 @@ fn reparse_directory_is_not_followed_by_default() {
     fs::write(outside.join("hidden.mp3"), b"test").unwrap();
     symlink_dir(&outside, library.join("linked")).expect("Windows CI must permit symlink creation");
     let mut found = Vec::new();
+    let mut warnings = Vec::new();
     LocalFileSystem
         .enumerate(&library, false, &mut |item| {
-            found.push(item.unwrap());
+            match item {
+                Ok(path) => found.push(path),
+                Err(warning) => warnings.push(warning),
+            }
             true
         })
         .unwrap();
     assert!(found.is_empty());
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.starts_with("reparse_point_skipped:")));
 }
