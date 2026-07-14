@@ -17,6 +17,8 @@
 - 実filesystemの全workflow、warm cache、snapshot不一致、冪等性、取消、cross-volume失敗、逆順rollback、cursor/metrics/history試験。
 - cold/warm時間、件/秒、cache hit率、phase metrics、RSSを出力するbenchmark。
 - Linux/Windows CI、Windows固有Unicode/予約名/長いpath/reparse試験、Tauri bundle artifact定義。
+- GitHub Actions run `29350015563`でLinux/Windows検証とTauri bundle生成が成功。
+- Windows artifact内のMSIおよびNSIS setup executableの生成・ダウンロード確認。
 
 ## ローカルで残っている実装作業
 
@@ -24,7 +26,6 @@
 
 ## 利用者の確認が必要な外部作業
 
-1. リポジトリをpushまたはPR化し、GitHub ActionsのWindows jobとbundle artifact生成が成功することを確認する。
-2. bundleから得たWindows installerをWindows実機へインストールし、WebView2環境で起動・基本操作を受入確認する。
+1. bundleから得たWindows installerをWindows実機へインストールし、WebView2環境で起動・基本操作を受入確認する。
 
-Windows固有コードとCI定義は実装済みだが、このLinux/Docker環境だけではWindows runnerおよび実機の結果を確定できない。
+Windows runnerでの固有試験とbundle生成は確認済み。残る工程はWindows実機でのinstaller受入確認のみ。

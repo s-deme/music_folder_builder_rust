@@ -15,5 +15,5 @@
 
 ## 外部受入確認
 
-- [ ] GitHub Actionsをpush/PRで実走し、Windows固有試験とTauri bundle artifactの成功を確認する。
+- [x] GitHub Actionsをpush/PRで実走し、Windows固有試験とTauri bundle artifactの成功を確認する（run `29350015563`）。
 - [ ] 生成されたWindows installerをWindows実機へインストールして起動確認する。
