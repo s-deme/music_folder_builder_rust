@@ -101,16 +101,13 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         .unwrap()
         .iter()
         .any(|metric| metric.phase == "apply"));
-    assert_eq!(
-        VerifyUseCase {
-            store: Arc::clone(&store),
-            files: Arc::clone(&files)
-        }
-        .execute(&applied.execution_id)
-        .unwrap()
-        .failed,
-        0
-    );
+    let verified = VerifyUseCase {
+        store: Arc::clone(&store),
+        files: Arc::clone(&files),
+    }
+    .execute(&applied.execution_id)
+    .unwrap();
+    assert_eq!(verified.failed, 0);
     let rollback = RollbackUseCase {
         store: Arc::clone(&store),
         files: Arc::clone(&files),
@@ -125,6 +122,35 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         .unwrap();
     assert!(history.iter().any(|row| row.kind == "verify"));
     assert!(history.iter().any(|row| row.kind == "rollback"));
+    let plan_detail = store.get_run_detail("plan", &plan.plan_id).unwrap();
+    assert_eq!(
+        plan_detail.parent_id.as_deref(),
+        Some(scan.scan_id.as_str())
+    );
+    assert_eq!(plan_detail.success, plan.items);
+    let apply_detail = store
+        .get_run_detail("apply", &applied.execution_id)
+        .unwrap();
+    assert_eq!(
+        apply_detail.parent_id.as_deref(),
+        Some(plan.plan_id.as_str())
+    );
+    let verify_detail = store.get_run_detail("verify", &verified.verify_id).unwrap();
+    assert_eq!(
+        verify_detail.parent_id.as_deref(),
+        Some(applied.execution_id.as_str())
+    );
+    let rollback_detail = store
+        .get_run_detail("rollback", &rollback.rollback_id)
+        .unwrap();
+    assert_eq!(
+        rollback_detail.parent_id.as_deref(),
+        Some(applied.execution_id.as_str())
+    );
+    assert_eq!(
+        store.get_run_detail("unknown", "id").unwrap_err(),
+        "invalid_run_kind"
+    );
 
     rusqlite::Connection::open(&database)
         .unwrap()

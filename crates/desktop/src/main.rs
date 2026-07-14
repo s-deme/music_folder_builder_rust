@@ -318,6 +318,14 @@ fn list_history(
     store(&database)?.list_history(limit.min(200), cursor)
 }
 #[tauri::command]
+fn get_run_detail(
+    database: String,
+    kind: String,
+    run_id: String,
+) -> Result<music_folder_infra::sqlite::RunDetailRow, String> {
+    store(&database)?.get_run_detail(&kind, &run_id)
+}
+#[tauri::command]
 fn list_plan_items(
     database: String,
     plan_id: String,
@@ -365,6 +373,7 @@ fn main() {
             verify_execution,
             rollback_execution,
             list_history,
+            get_run_detail,
             list_plan_items,
             list_operation_logs,
             list_metrics

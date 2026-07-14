@@ -19,6 +19,16 @@ pub struct HistoryRow {
     pub status: String,
     pub started_at: i64,
 }
+#[derive(Debug, serde::Serialize)]
+pub struct RunDetailRow {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub parent_id: Option<String>,
+    pub success: u64,
+    pub skipped: u64,
+    pub failed: u64,
+}
 #[derive(serde::Serialize)]
 pub struct PlanItemRow {
     pub id: String,
@@ -139,6 +149,34 @@ impl SqliteScanStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         Ok(rows)
+    }
+    pub fn get_run_detail(&self, kind: &str, id: &str) -> Result<RunDetailRow, String> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let sql = match kind {
+            "scan" => "SELECT id,status,NULL,(SELECT COUNT(*) FROM scan_items WHERE scan_id=scan_runs.id),0,warning_count FROM scan_runs WHERE id=?1",
+            "plan" => "SELECT id,status,scan_id,(SELECT COUNT(*) FROM plan_items WHERE plan_id=plan_runs.id),conflict_count,risk_count FROM plan_runs WHERE id=?1",
+            "apply" => "SELECT id,status,plan_id,success_count,skipped_count,failed_count FROM execution_runs WHERE id=?1",
+            "verify" => "SELECT id,status,execution_id,success_count,0,failed_count FROM verify_runs WHERE id=?1",
+            "rollback" => "SELECT id,status,execution_id,success_count,skipped_count,failed_count FROM rollback_runs WHERE id=?1",
+            _ => return Err("invalid_run_kind".to_string()),
+        };
+        conn.query_row(sql, params![id], |row| {
+            Ok(RunDetailRow {
+                id: row.get(0)?,
+                kind: kind.to_string(),
+                status: row.get(1)?,
+                parent_id: row.get(2)?,
+                success: row.get::<_, i64>(3)? as u64,
+                skipped: row.get::<_, i64>(4)? as u64,
+                failed: row.get::<_, i64>(5)? as u64,
+            })
+        })
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "run_not_found".to_string())
     }
     /// Keyset pagination: callers retain the last ordinal; no OFFSET scan or full result transfer.
     pub fn list_plan_items(
