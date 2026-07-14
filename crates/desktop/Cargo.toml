@@ -1,0 +1,15 @@
+[package]
+name = "music-folder-desktop"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.0" }
+
+[dependencies]
+music-folder-core = { path = "../core" }
+music-folder-infra = { path = "../infra" }
+tauri = { version = "2.0", features = [] }
+serde.workspace = true
+tracing.workspace = true
+uuid.workspace = true

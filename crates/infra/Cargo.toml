@@ -1,0 +1,17 @@
+[package]
+name = "music-folder-infra"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+music-folder-core = { path = "../core" }
+lofty.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3.15"

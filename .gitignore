@@ -1,0 +1,12 @@
+/target/
+/node_modules/
+/dist/
+/ui/node_modules/
+/ui/dist/
+*.tsbuildinfo
+/src-tauri/target/
+*.db
+*.db-shm
+*.db-wal
+.env
+.docker/

@@ -1,0 +1,17 @@
+[package]
+name = "music-folder-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "music-folder"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+music-folder-core = { path = "../core" }
+music-folder-infra = { path = "../infra" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true

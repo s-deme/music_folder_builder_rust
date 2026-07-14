@@ -1,0 +1,11 @@
+{
+  "license": "CC0-1.0",
+  "fixtures": [
+    {"path":"flac/japanese.flac","format":"flac","artist":"日本語アーティスト","album":"テストアルバム","title":"楽曲"},
+    {"path":"mp3/japanese.mp3","format":"mp3","artist":"日本語アーティスト","album":"テストアルバム","title":"楽曲"},
+    {"path":"m4a/japanese.m4a","format":"m4a","artist":"日本語アーティスト","album":"テストアルバム","title":"楽曲"},
+    {"path":"ogg/japanese.ogg","format":"ogg","artist":"日本語アーティスト","album":"テストアルバム","title":"楽曲"},
+    {"path":"missing/no-artist.mp3","format":"mp3","artist":null,"album":"テストアルバム","title":"楽曲"},
+    {"path":"broken/not-audio.mp3","format":"mp3","broken":true}
+  ]
+}
