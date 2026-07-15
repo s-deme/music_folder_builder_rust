@@ -25,6 +25,7 @@
 - [x] T19: 命名プリセット、重複方針、Core validation/preview APIと後方互換serdeを追加する（T13依存）。
 - [x] T20: Desktop命名JSONをフォーム、token挿入、階層preview、即時error表示へ置換する（T19依存）。
 - [x] T21: 命名validation、preview、重複方針のunit/integration testとUI typecheck/buildを追加する（T19、T20依存）。
+- [x] T22: Plan一覧の null cursor 末尾判定、追加読込の排他、古い応答の破棄、重複排除を実装する。
 - [ ] T22: Core/infra/CLI/Desktop の unit・integration test、Windows fixture/path test、`fmt`/`clippy`/workspace test と CI を更新する（T21依存）。
 - [x] T23: Plan cursor APIへ全件・絞り込み・action/risk別件数とnext cursorを追加し、repository integration testを追加する。
 - [x] T24: Desktop Plan一覧へ件数summary、件数付きfilter、読込進捗、source/target/reasonの縦型item表示を追加し、長いpathによる横scrollを解消する（T23依存）。

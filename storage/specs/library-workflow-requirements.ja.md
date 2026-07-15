@@ -86,6 +86,8 @@ WHEN run が進行・完了・中断する場合、THEN システム SHALL 状�
 
 WHEN UI が plan または履歴一覧を表示する場合、THEN システム SHALL cursor/page API と仮想スクロールを用い、全 item を WebView へ一括送信しない。
 
+WHEN cursor/page API が末尾を返した場合、THEN UI SHALL 追加読込を終了し、同一 cursor の並行要求、重複 item の追記、および絞り込み後件数を超える表示を防止する。
+
 WHEN UI が plan 一覧を表示する場合、THEN システム SHALL plan 全件数、現在の検索・filterに該当する件数、WebViewへ読込済みの件数、および risk/action 別件数を区別して表示する。
 
 WHEN UI が長い source/target path を表示する場合、THEN システム SHALL 一覧全体を横方向へ拡張せず、source、target、理由を識別可能なラベルと省略・展開可能な表示を提供する。
