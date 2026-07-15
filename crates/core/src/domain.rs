@@ -69,6 +69,18 @@ pub struct NamingRules {
     pub duplicate_suffix_template: String,
     pub use_source_filename: bool,
     pub use_source_image_filename: bool,
+    #[serde(default)]
+    pub duplicate_strategy: DuplicateStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateStrategy {
+    #[default]
+    Legacy,
+    Skip,
+    Sequence,
+    Template,
 }
 
 impl Default for NamingRules {
@@ -81,7 +93,173 @@ impl Default for NamingRules {
             duplicate_suffix_template: "".into(),
             use_source_filename: false,
             use_source_image_filename: false,
+            duplicate_strategy: DuplicateStrategy::Skip,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamingIssue {
+    pub field: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamingPreview {
+    pub relative_path: PathBuf,
+    pub issues: Vec<NamingIssue>,
+}
+
+const NAMING_FIELDS: &[&str] = &[
+    "artist",
+    "album_artist",
+    "album",
+    "title",
+    "track_no",
+    "disc_no",
+    "year",
+    "extension",
+    "source_stem",
+];
+
+pub fn validate_naming_rules(rules: &NamingRules) -> Vec<NamingIssue> {
+    let mut issues = Vec::new();
+    let templates = [
+        (
+            "artist_dir_template",
+            rules.artist_dir_template.as_str(),
+            true,
+        ),
+        (
+            "album_dir_template",
+            rules.album_dir_template.as_str(),
+            true,
+        ),
+        ("disc_dir_template", rules.disc_dir_template.as_str(), false),
+        (
+            "filename_template",
+            rules.filename_template.as_str(),
+            !rules.use_source_filename,
+        ),
+    ];
+    for (field, template, required) in templates {
+        if required && template.trim().is_empty() {
+            issues.push(issue(field, "empty_required", "必須のテンプレートが空です"));
+        }
+        validate_template(field, template, &mut issues);
+    }
+    if rules.duplicate_strategy == DuplicateStrategy::Template
+        || (rules.duplicate_strategy == DuplicateStrategy::Legacy
+            && !rules.duplicate_suffix_template.is_empty())
+    {
+        if rules.duplicate_suffix_template.trim().is_empty() {
+            issues.push(issue(
+                "duplicate_suffix_template",
+                "empty_required",
+                "カスタム重複末尾を入力してください",
+            ));
+        }
+        validate_template(
+            "duplicate_suffix_template",
+            &rules.duplicate_suffix_template,
+            &mut issues,
+        );
+    }
+    issues
+}
+
+pub fn preview_naming(rules: &NamingRules, metadata: &TrackMetadata) -> NamingPreview {
+    let mut issues = validate_naming_rules(rules);
+    let source_stem = "source_track";
+    let extension = ".flac";
+    let filename = if rules.use_source_filename {
+        format!("{source_stem}{extension}")
+    } else {
+        render_template(&rules.filename_template, metadata, source_stem, extension)
+    };
+    let mut path = PathBuf::new();
+    for (field, template, optional) in [
+        (
+            "artist_dir_template",
+            rules.artist_dir_template.as_str(),
+            false,
+        ),
+        (
+            "album_dir_template",
+            rules.album_dir_template.as_str(),
+            false,
+        ),
+        ("disc_dir_template", rules.disc_dir_template.as_str(), true),
+    ] {
+        let value = render_template(template, metadata, source_stem, extension);
+        let value = value.trim_matches([' ', '.']);
+        if value.is_empty() {
+            if !optional {
+                issues.push(issue(
+                    field,
+                    "empty_component",
+                    "生成されるフォルダ名が空です",
+                ));
+            }
+        } else {
+            path.push(sanitize_component(value));
+        }
+    }
+    if filename.trim().is_empty() {
+        issues.push(issue(
+            "filename_template",
+            "empty_component",
+            "生成されるファイル名が空です",
+        ));
+    } else {
+        path.push(sanitize_component(&filename));
+    }
+    if let Err(error) = assess_windows_path(&path) {
+        issues.push(issue("path", "unsafe_path", &error.to_string()));
+    }
+    NamingPreview {
+        relative_path: path,
+        issues,
+    }
+}
+
+fn issue(field: &str, code: &str, message: &str) -> NamingIssue {
+    NamingIssue {
+        field: field.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn validate_template(field: &str, template: &str, issues: &mut Vec<NamingIssue>) {
+    if template.chars().filter(|c| *c == '{').count()
+        != template.chars().filter(|c| *c == '}').count()
+        || template.chars().filter(|c| *c == '[').count()
+            != template.chars().filter(|c| *c == ']').count()
+    {
+        issues.push(issue(
+            field,
+            "unbalanced_delimiter",
+            "{} または [] が閉じていません",
+        ));
+        return;
+    }
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        let Some(end) = rest[start + 1..].find('}') else {
+            break;
+        };
+        let token = &rest[start + 1..start + 1 + end];
+        let name = token.split(':').next().unwrap_or_default();
+        if !NAMING_FIELDS.contains(&name) {
+            issues.push(issue(
+                field,
+                "unknown_field",
+                &format!("未知のフィールド: {name}"),
+            ));
+        }
+        rest = &rest[start + end + 2..];
     }
 }
 
@@ -315,6 +493,35 @@ mod tests {
             ),
             "Artist/03_Song.mp3"
         );
+    }
+    #[test]
+    fn validates_unknown_fields_and_previews_a_path() {
+        let metadata = TrackMetadata {
+            artist: Some("Artist".into()),
+            album_artist: None,
+            album: Some("Album".into()),
+            title: Some("Song".into()),
+            track_no: Some(3),
+            disc_no: Some(1),
+            year: Some(2026),
+        };
+        let preview = preview_naming(&NamingRules::default(), &metadata);
+        assert!(preview.issues.is_empty());
+        assert_eq!(
+            preview.relative_path,
+            PathBuf::from("Artist/Album/01/03_Song.flac")
+        );
+        let invalid = NamingRules {
+            filename_template: "{unknown}".into(),
+            ..NamingRules::default()
+        };
+        assert_eq!(validate_naming_rules(&invalid)[0].code, "unknown_field");
+    }
+    #[test]
+    fn old_naming_json_defaults_duplicate_strategy_to_skip() {
+        let json = r#"{"artist_dir_template":"{artist}","album_dir_template":"{album}","disc_dir_template":"","filename_template":"{title}{extension}","duplicate_suffix_template":"","use_source_filename":false,"use_source_image_filename":false}"#;
+        let rules: NamingRules = serde_json::from_str(json).expect("old naming rules");
+        assert_eq!(rules.duplicate_strategy, DuplicateStrategy::Legacy);
     }
 }
 

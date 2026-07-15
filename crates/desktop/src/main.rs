@@ -263,6 +263,21 @@ fn create_plan(
     })
 }
 #[tauri::command]
+fn preview_naming(naming: music_folder_core::NamingRules) -> music_folder_core::NamingPreview {
+    music_folder_core::preview_naming(
+        &naming,
+        &music_folder_core::TrackMetadata {
+            artist: Some("サンプルアーティスト".into()),
+            album_artist: Some("サンプルアルバムアーティスト".into()),
+            album: Some("サンプルアルバム".into()),
+            title: Some("サンプル曲".into()),
+            track_no: Some(3),
+            disc_no: Some(1),
+            year: Some(2026),
+        },
+    )
+}
+#[tauri::command]
 fn revise_plan_target(
     database: String,
     plan_id: String,
@@ -409,6 +424,7 @@ fn main() {
             scan_status,
             cancel_scan,
             create_plan,
+            preview_naming,
             revise_plan_target,
             apply_plan,
             verify_execution,

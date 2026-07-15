@@ -21,7 +21,10 @@
 - [ ] T16: Core Plan/RevisePlan use case に音楽命名、同梱画像の対応付け、画像名保持、重複解決、手動 target 改訂を実装する。
 - [ ] T17: CLI に TOML naming 設定、plan revision、history cleanup、および本 rollback の明示確認オプションを追加する。
 - [ ] T18: Tauri command と React UI に命名設定、plan item target 指定、履歴削除確認、本 rollback 確認を追加する。
-- [ ] T19: Core/infra/CLI/Desktop の unit・integration test、Windows fixture/path test、`fmt`/`clippy`/workspace test と CI を更新する。
+- [x] T19: 命名プリセット、重複方針、Core validation/preview APIと後方互換serdeを追加する（T13依存）。
+- [x] T20: Desktop命名JSONをフォーム、token挿入、階層preview、即時error表示へ置換する（T19依存）。
+- [x] T21: 命名validation、preview、重複方針のunit/integration testとUI typecheck/buildを追加する（T19、T20依存）。
+- [ ] T22: Core/infra/CLI/Desktop の unit・integration test、Windows fixture/path test、`fmt`/`clippy`/workspace test と CI を更新する（T21依存）。
 
 ## 外部受入確認
 

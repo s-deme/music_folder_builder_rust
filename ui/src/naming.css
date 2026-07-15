@@ -1,0 +1,8 @@
+fieldset { margin: 22px 0; padding: 18px; border: 1px solid #c7d2df; border-radius: 8px; }
+legend { font-weight: 700; }
+.check { display: flex; align-items: center; gap: 8px; }
+.check input { width: auto; margin: 0; }
+.token-insert { align-items: end; }
+.naming-preview { display: grid; gap: 8px; margin-top: 18px; padding: 14px; background: #f2f6fa; border-radius: 6px; }
+.naming-preview code { overflow-wrap: anywhere; }
+.naming-preview .error { margin: 0; }

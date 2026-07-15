@@ -1,6 +1,6 @@
 # Fast Core/CLI/UI development image. It deliberately does not package a
 # Windows desktop installer: Tauri's Windows WebView runtime must be built on Windows.
-FROM node:20-bookworm-slim AS node
+FROM node:24-bookworm-slim AS node
 FROM rust:1-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \

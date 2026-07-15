@@ -41,6 +41,9 @@ enum Command {
         filename_template: Option<String>,
         #[arg(long)]
         duplicate_suffix_template: Option<String>,
+        /// Duplicate handling: skip, sequence, or template.
+        #[arg(long, default_value = "skip")]
+        duplicate_strategy: String,
         #[arg(long)]
         use_source_filename: bool,
         #[arg(long)]
@@ -115,6 +118,7 @@ fn main() -> anyhow::Result<()> {
             disc_dir_template,
             filename_template,
             duplicate_suffix_template,
+            duplicate_strategy,
             use_source_filename,
             use_source_image_filename,
         } => {
@@ -135,6 +139,12 @@ fn main() -> anyhow::Result<()> {
             if let Some(value) = duplicate_suffix_template {
                 naming.duplicate_suffix_template = value;
             }
+            naming.duplicate_strategy = match duplicate_strategy.as_str() {
+                "skip" => music_folder_core::DuplicateStrategy::Skip,
+                "sequence" => music_folder_core::DuplicateStrategy::Sequence,
+                "template" => music_folder_core::DuplicateStrategy::Template,
+                _ => anyhow::bail!("duplicate_strategy must be skip, sequence, or template"),
+            };
             naming.use_source_filename = use_source_filename;
             naming.use_source_image_filename = use_source_image_filename;
             let result = PlanUseCase { store }

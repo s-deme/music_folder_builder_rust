@@ -9,7 +9,7 @@ shell:
 # The canonical local validation entry point.  It must run inside the dev
 # container; the WSL host intentionally need not have Rust or Node.js installed.
 validate:
-	docker compose run --rm dev bash -c 'npm --prefix ui ci && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build'
+	docker compose run --rm dev bash -c 'npm --prefix ui ci && npm --prefix ui audit --audit-level=moderate && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build'
 
 check: validate
 

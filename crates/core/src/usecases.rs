@@ -6,8 +6,8 @@ use crate::{
         ApplyStore, FileMutator, FileSystem, ManualTargetChange, MetadataReader, PlanRevisionStore,
         PlanStore, RollbackStore, ScanStore, VerifyStore,
     },
-    render_template, sanitize_component, FileKind, NamingRules, OperationLog, PlanAction, PlanItem,
-    Risk, ScannedFile,
+    render_template, sanitize_component, DuplicateStrategy, FileKind, NamingRules, OperationLog,
+    PlanAction, PlanItem, Risk, ScannedFile,
 };
 use crossbeam_channel::{bounded, Receiver};
 use sha2::{Digest, Sha256};
@@ -490,6 +490,10 @@ impl<S: PlanRevisionStore> RevisePlanUseCase<S> {
 
 impl<S: PlanStore> PlanUseCase<S> {
     pub fn execute(&self, scan_id: &str, options: &PlanOptions) -> Result<PlanResult, String> {
+        let issues = crate::validate_naming_rules(&options.naming);
+        if !issues.is_empty() {
+            return Err(format!("invalid_naming_rules:{}", issues[0].code));
+        }
         let started = Instant::now();
         let files = self.store.load_completed_scan(scan_id)?;
         let plan_id = self
@@ -734,13 +738,19 @@ fn resolve_duplicate_targets(items: &mut [PlanItem], naming: &NamingRules) {
         let count = seen.entry(key).or_insert(0);
         *count += 1;
         if *count > 1 {
-            if naming.duplicate_suffix_template.is_empty() && item.file.kind != FileKind::Image {
+            if (naming.duplicate_strategy == DuplicateStrategy::Skip
+                || (naming.duplicate_strategy == DuplicateStrategy::Legacy
+                    && naming.duplicate_suffix_template.is_empty()))
+                && item.file.kind != FileKind::Image
+            {
                 item.action = PlanAction::Skip;
                 item.risk = Risk::Conflict;
                 item.reason = Some("target_conflict".into());
                 continue;
             }
-            let suffix = if item.file.kind == FileKind::Image {
+            let suffix = if item.file.kind == FileKind::Image
+                || naming.duplicate_strategy == DuplicateStrategy::Sequence
+            {
                 format!("_{}", count)
             } else {
                 let metadata = item.file.metadata.as_ref().expect("music metadata");

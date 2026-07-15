@@ -26,6 +26,8 @@ apply の実装順序は `plan item検証 -> target存在確認 -> 同一volume 
 
 Plan は naming rules snapshot（artist/album/disc/filename/duplicate suffix、元音楽・画像ファイル名の保持設定）を保存する。テンプレート展開は Core の純粋関数とし、数値書式と `[{field}]` 形式の条件ブロックを解釈してから component sanitization を行う。音楽 target の重複は suffix template を item 固有値で展開し、なお重複する場合は安定した連番を追加する。それでも既存 target または path risk があれば skip する。
 
+CoreはUIから独立した命名規則validation/preview APIを持つ。validationはtoken構文、field allow-list、必須component、生成後path policyを返す。NamingRulesの追加fieldはserde defaultを持ち、保存済みsnapshotを読み取れる後方互換性を維持する。
+
 scan は音楽と画像 asset を区別して snapshot に保存する。Plan は音楽 item が決定した source-directory-to-target-directory 対応を根拠に jpg/jpeg/png/webp/gif/bmp を対応付ける。画像は対応音楽がない・複数 target に曖昧に対応する場合に skip とし、source image filename を保持する設定では同一 directory 内で `_2` 以降の連番を付ける。
 
 手動 target 指定は completed plan の item を更新しない。Core の `RevisePlanUseCase` が親 plan と変更集合を読み、新 plan と全 item snapshot/hash を生成する。apply は従来どおり新 plan の保存済み item のみを入力とする。

@@ -40,9 +40,15 @@ WHEN plan が target path を生成する場合、THEN システム SHALL Unicod
 
 WHEN 利用者が plan を作成する場合、THEN システム SHALL artist、album、disc、filename のテンプレートを用いて target を生成し、`artist`、`album_artist`、`album`、`title`、`track_no`、`disc_no`、`year`、`extension`、`source_stem` を参照可能にする。テンプレートは数値書式と、値がない場合に全体を省略する条件ブロックを提供する。
 
+WHEN 利用者が命名規則を編集する場合、THEN システム SHALL 用途別プリセット、日本語ラベル付きフィールド、利用可能なフィールドの挿入、既定値への復元を提供し、内部JSONの直接編集を要求してはならない。
+
+WHEN 命名規則が変更された場合、THEN システム SHALL 構文、未知フィールド、空の必須componentおよびWindows path riskを検証し、サンプルmetadataから生成される相対pathをPlan作成前に表示する。
+
 ### REQ-PLN-003: 重複 target の解決
 
 IF 複数 item が同一 target となる場合、THEN システム SHALL 設定済みの duplicate suffix template により決定的かつ一意な target を生成する。suffix で解決できない衝突は skip として保存し、既存 target を上書きしてはならない。
+
+WHEN 利用者が重複処理を設定する場合、THEN システム SHALL `skip`、安定した`sequence`、templateによるsuffixを明示的に選択可能にし、選択結果をrules snapshotへ保存する。
 
 ### REQ-PLN-004: 手動 target 指定
 

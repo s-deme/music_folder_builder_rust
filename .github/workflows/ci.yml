@@ -12,19 +12,20 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm --prefix ui ci
+      - run: npm --prefix ui audit --audit-level=moderate
       - name: Verify generated audio fixtures
         if: runner.os == 'Linux'
         run: test -s crates/infra/tests/fixtures/flac/japanese.flac && test -s crates/infra/tests/fixtures/mp3/japanese.mp3 && test -s crates/infra/tests/fixtures/m4a/japanese.m4a && test -s crates/infra/tests/fixtures/ogg/japanese.ogg
@@ -36,7 +37,7 @@ jobs:
       - name: Benchmark fixture scan
         if: runner.os == 'Linux'
         run: cargo run -p music-folder-cli -- benchmark --source crates/infra/tests/fixtures --db benchmark.db > benchmark.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: runner.os == 'Linux'
         with:
           name: benchmark-json
@@ -45,19 +46,20 @@ jobs:
     runs-on: windows-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm --prefix ui ci
+      - run: npm --prefix ui audit --audit-level=moderate
       - run: npm --prefix ui run build
       - name: Build Windows bundle
         working-directory: crates/desktop
         run: npm --prefix ../../ui exec --yes --package @tauri-apps/cli tauri build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: music-folder-desktop-windows
           path: target/release/bundle/**
