@@ -98,6 +98,16 @@ WHEN 利用者が実行操作を選択する場合、THEN UI SHALL Scan、Plan�
 
 WHEN 利用者が履歴を削除する場合、THEN システム SHALL 対象 run と従属する plan、execution、verify、rollback、log を transaction 内で削除し、実ファイルを変更してはならない。実行中 run は削除してはならない。
 
+### REQ-UI-004: 判読可能な実行履歴
+
+WHEN UI が実行履歴を表示する場合、THEN システム SHALL 各 run の種別、状態、開始・終了日時、所要時間、成功・スキップ・失敗または警告の集計を日本語で判読可能に表示し、内部 ID は補助情報として省略表示と全文コピーを提供する。
+
+WHEN 利用者が履歴を探索する場合、THEN システム SHALL run 種別、状態、ID による絞り込み、新旧順の並び替え、および開始日時と ID の安定した複合 cursor pagination を提供する。
+
+WHEN 同じ scan から派生した run が存在する場合、THEN システム SHALL Scan → Plan → Dry-run/Apply → Verify/Rollback の関連をグループとして識別できるようにする。
+
+WHEN 利用者が履歴行を選択する場合、THEN システム SHALL 一覧とは別の詳細領域に完全な ID、親 run、集計、日時、および「この実行を開く」操作を表示し、削除を主操作として表示してはならない。
+
 ### REQ-UI-004: Desktop rollback
 
 WHEN 利用者が Desktop から rollback を実行する場合、THEN UI SHALL dry-run と本実行を別の操作として示し、本実行には execution ID、対象件数、不可逆な削除を含む確認操作を要求する。

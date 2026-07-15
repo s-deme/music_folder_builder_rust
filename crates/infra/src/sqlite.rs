@@ -16,12 +16,19 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct HistoryRow {
     pub id: String,
     pub kind: String,
+    pub mode: Option<String>,
     pub status: String,
     pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub parent_id: Option<String>,
+    pub root_scan_id: String,
+    pub success: u64,
+    pub skipped: u64,
+    pub failed: u64,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct RunDetailRow {
@@ -201,21 +208,80 @@ impl SqliteScanStore {
     }
 
     pub fn list_history(&self, limit: u32, cursor: Option<i64>) -> Result<Vec<HistoryRow>, String> {
+        self.list_history_filtered(limit, cursor, None, None, None, None, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_history_filtered(
+        &self,
+        limit: u32,
+        cursor_started_at: Option<i64>,
+        cursor_id: Option<&str>,
+        kind: Option<&str>,
+        status: Option<&str>,
+        query: Option<&str>,
+        oldest_first: bool,
+    ) -> Result<Vec<HistoryRow>, String> {
         let conn = self
             .connection
             .lock()
             .map_err(|_| "database mutex poisoned".to_string())?;
-        let after = cursor.unwrap_or(i64::MAX);
-        let mut stmt = conn.prepare("SELECT id,'scan',status,started_at FROM scan_runs WHERE started_at<?1 UNION ALL SELECT id,'plan',status,started_at FROM plan_runs WHERE started_at<?1 UNION ALL SELECT id,'apply',status,started_at FROM execution_runs WHERE started_at<?1 UNION ALL SELECT id,'verify',status,started_at FROM verify_runs WHERE started_at<?1 UNION ALL SELECT id,'rollback',status,started_at FROM rollback_runs WHERE started_at<?1 ORDER BY started_at DESC,id DESC LIMIT ?2").map_err(|e|e.to_string())?;
+        let cursor_time =
+            cursor_started_at.unwrap_or(if oldest_first { i64::MIN } else { i64::MAX });
+        let cursor_key = cursor_id.unwrap_or(if oldest_first { "" } else { "\u{10ffff}" });
+        let comparison = if oldest_first {
+            "(started_at > ?4 OR (started_at = ?4 AND id > ?5))"
+        } else {
+            "(started_at < ?4 OR (started_at = ?4 AND id < ?5))"
+        };
+        let ordering = if oldest_first { "ASC" } else { "DESC" };
+        let sql = format!(
+            "WITH history AS (
+             SELECT s.id,'scan' kind,NULL mode,s.status,s.started_at,s.finished_at,NULL parent_id,s.id root_scan_id,
+                    (SELECT COUNT(*) FROM scan_items i WHERE i.scan_id=s.id) success,0 skipped,s.warning_count failed
+             FROM scan_runs s
+             UNION ALL
+             SELECT p.id,'plan',NULL,p.status,p.started_at,p.finished_at,p.scan_id,p.scan_id,
+                    (SELECT COUNT(*) FROM plan_items i WHERE i.plan_id=p.id),p.conflict_count,p.risk_count
+             FROM plan_runs p
+             UNION ALL
+             SELECT e.id,'apply',e.mode,e.status,e.started_at,e.finished_at,e.plan_id,p.scan_id,
+                    e.success_count,e.skipped_count,e.failed_count
+             FROM execution_runs e JOIN plan_runs p ON p.id=e.plan_id
+             UNION ALL
+             SELECT v.id,'verify',NULL,v.status,v.started_at,v.finished_at,v.execution_id,p.scan_id,
+                    v.success_count,0,v.failed_count
+             FROM verify_runs v JOIN execution_runs e ON e.id=v.execution_id JOIN plan_runs p ON p.id=e.plan_id
+             UNION ALL
+             SELECT r.id,'rollback',r.mode,r.status,r.started_at,r.finished_at,r.execution_id,p.scan_id,
+                    r.success_count,r.skipped_count,r.failed_count
+             FROM rollback_runs r JOIN execution_runs e ON e.id=r.execution_id JOIN plan_runs p ON p.id=e.plan_id)
+             SELECT id,kind,mode,status,started_at,finished_at,parent_id,root_scan_id,success,skipped,failed
+             FROM history
+             WHERE (?1 IS NULL OR kind=?1) AND (?2 IS NULL OR status=?2)
+               AND (?3 IS NULL OR lower(id) LIKE '%' || lower(?3) || '%') AND {comparison}
+             ORDER BY started_at {ordering},id {ordering} LIMIT ?6"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![after, limit], |r| {
-                Ok(HistoryRow {
-                    id: r.get(0)?,
-                    kind: r.get(1)?,
-                    status: r.get(2)?,
-                    started_at: r.get(3)?,
-                })
-            })
+            .query_map(
+                params![kind, status, query, cursor_time, cursor_key, limit],
+                |r| {
+                    Ok(HistoryRow {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        mode: r.get(2)?,
+                        status: r.get(3)?,
+                        started_at: r.get(4)?,
+                        finished_at: r.get(5)?,
+                        parent_id: r.get(6)?,
+                        root_scan_id: r.get(7)?,
+                        success: r.get::<_, i64>(8)? as u64,
+                        skipped: r.get::<_, i64>(9)? as u64,
+                        failed: r.get::<_, i64>(10)? as u64,
+                    })
+                },
+            )
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;

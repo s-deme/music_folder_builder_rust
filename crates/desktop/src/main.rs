@@ -365,12 +365,26 @@ fn history_cleanup_preview(
     store(&database)?.history_cleanup_preview(&kind, &run_id)
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn list_history(
     database: String,
     limit: u32,
-    cursor: Option<i64>,
+    cursor_started_at: Option<i64>,
+    cursor_id: Option<String>,
+    kind: Option<String>,
+    status: Option<String>,
+    query: Option<String>,
+    oldest_first: Option<bool>,
 ) -> Result<Vec<music_folder_infra::sqlite::HistoryRow>, String> {
-    store(&database)?.list_history(limit.min(200), cursor)
+    store(&database)?.list_history_filtered(
+        limit.min(200),
+        cursor_started_at,
+        cursor_id.as_deref(),
+        kind.as_deref(),
+        status.as_deref(),
+        query.as_deref(),
+        oldest_first.unwrap_or(false),
+    )
 }
 #[tauri::command]
 fn get_run_detail(

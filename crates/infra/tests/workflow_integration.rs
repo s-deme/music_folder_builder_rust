@@ -124,6 +124,42 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         .unwrap();
     assert!(history.iter().any(|row| row.kind == "verify"));
     assert!(history.iter().any(|row| row.kind == "rollback"));
+    assert!(history
+        .iter()
+        .filter(|row| row.kind != "scan")
+        .all(|row| row.root_scan_id == scan.scan_id));
+    let apply_history = store
+        .list_history_filtered(
+            100,
+            None,
+            None,
+            Some("apply"),
+            Some("completed"),
+            Some(&applied.execution_id),
+            false,
+        )
+        .unwrap();
+    assert_eq!(apply_history.len(), 1);
+    assert_eq!(apply_history[0].success, applied.success);
+    assert_eq!(
+        apply_history[0].parent_id.as_deref(),
+        Some(plan.plan_id.as_str())
+    );
+    let first_page = store
+        .list_history_filtered(1, None, None, None, None, None, false)
+        .unwrap();
+    let second_page = store
+        .list_history_filtered(
+            1,
+            Some(first_page[0].started_at),
+            Some(&first_page[0].id),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    assert_ne!(first_page[0].id, second_page[0].id);
     let plan_detail = store.get_run_detail("plan", &plan.plan_id).unwrap();
     assert_eq!(
         plan_detail.parent_id.as_deref(),
