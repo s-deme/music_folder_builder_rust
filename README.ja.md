@@ -12,7 +12,15 @@ docker compose run --rm dev bash -c "npm --prefix ui ci && npm --prefix ui run b
 検証は次の通り。
 
 ```powershell
-docker compose run --rm dev bash -c "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build"
+make validate
+```
+
+`make validate` は Docker の `dev` コンテナ内で Rust と Node.js を用いて、format、Clippy、workspace test、UI typecheck、UI production build を一括で実行する。WSL ホストに Rust/Node.js を導入する必要はない。
+
+ホストに `make` がない場合は、同じ検証を次で実行する。
+
+```powershell
+docker compose run --rm dev bash -c "npm --prefix ui ci && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build"
 ```
 
 LinuxコンテナではCore/CLI/Desktop/UIを検証する。GitHub ActionsのWindows runnerはWindows固有試験の後にTauri bundleを作成し、artifactとして保存する。

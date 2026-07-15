@@ -3,10 +3,11 @@
 use crate::{
     assess_windows_path,
     ports::{
-        ApplyStore, FileMutator, FileSystem, MetadataReader, PlanStore, RollbackStore, ScanStore,
-        VerifyStore,
+        ApplyStore, FileMutator, FileSystem, ManualTargetChange, MetadataReader, PlanRevisionStore,
+        PlanStore, RollbackStore, ScanStore, VerifyStore,
     },
-    sanitize_component, OperationLog, PlanAction, PlanItem, Risk, ScannedFile,
+    render_template, sanitize_component, FileKind, NamingRules, OperationLog, PlanAction, PlanItem,
+    Risk, ScannedFile,
 };
 use crossbeam_channel::{bounded, Receiver};
 use sha2::{Digest, Sha256};
@@ -346,17 +347,31 @@ fn spawn_scan_worker<
                     continue;
                 }
             };
-            let cached = store.previous_metadata(&path, &fingerprint).ok().flatten();
+            let is_image = is_image_path(&path);
+            let cached = if is_image {
+                None
+            } else {
+                store.previous_metadata(&path, &fingerprint).ok().flatten()
+            };
             let tag_started = Instant::now();
             let cache_hit = cached.is_some();
-            let metadata = cached.or_else(|| metadata.read(&path).ok());
-            let warning = metadata.is_none();
+            let metadata = if is_image {
+                None
+            } else {
+                cached.or_else(|| metadata.read(&path).ok())
+            };
+            let warning = !is_image && metadata.is_none();
             let _ = output.send(ScanWorkerResult::Record {
                 file: ScannedFile {
                     id: Uuid::new_v4(),
                     path,
                     fingerprint,
                     metadata,
+                    kind: if is_image {
+                        FileKind::Image
+                    } else {
+                        FileKind::Music
+                    },
                 },
                 cache_hit,
                 warning,
@@ -442,6 +457,7 @@ fn consume_scan_results(
 pub struct PlanOptions {
     pub target_root: PathBuf,
     pub batch_size: usize,
+    pub naming: NamingRules,
 }
 
 #[derive(Debug, Clone)]
@@ -456,16 +472,107 @@ pub struct PlanUseCase<S> {
     pub store: Arc<S>,
 }
 
+pub struct RevisePlanUseCase<S> {
+    pub store: Arc<S>,
+}
+impl<S: PlanRevisionStore> RevisePlanUseCase<S> {
+    pub fn execute(
+        &self,
+        parent_plan_id: &str,
+        changes: &[ManualTargetChange],
+    ) -> Result<String, String> {
+        if changes.is_empty() {
+            return Err("manual_target_change_required".into());
+        }
+        self.store.revise_plan(parent_plan_id, changes)
+    }
+}
+
 impl<S: PlanStore> PlanUseCase<S> {
     pub fn execute(&self, scan_id: &str, options: &PlanOptions) -> Result<PlanResult, String> {
         let started = Instant::now();
         let files = self.store.load_completed_scan(scan_id)?;
-        let plan_id = self.store.begin_plan(scan_id, &options.target_root)?;
+        let plan_id = self
+            .store
+            .begin_plan(scan_id, &options.target_root, &options.naming)?;
+        let mut music_targets = HashMap::<PathBuf, Vec<PathBuf>>::new();
         let mut items: Vec<PlanItem> = files
             .into_iter()
             .enumerate()
-            .map(|(index, file)| make_plan_item(index as u64 + 1, file, &options.target_root))
+            .map(|(index, file)| {
+                let item = if file.kind == FileKind::Music {
+                    make_plan_item(
+                        index as u64 + 1,
+                        file,
+                        &options.target_root,
+                        &options.naming,
+                    )
+                } else {
+                    skipped_plan_item(
+                        index as u64 + 1,
+                        file,
+                        Risk::MetadataMissing,
+                        "image_pending_anchor",
+                    )
+                };
+                if item.file.kind == FileKind::Music {
+                    if let Some(target) = &item.target {
+                        let mut source = item.file.path.parent();
+                        let target_parent = target.parent().map(Path::to_path_buf);
+                        while let (Some(directory), Some(target_parent)) =
+                            (source, target_parent.as_ref())
+                        {
+                            music_targets
+                                .entry(directory.to_path_buf())
+                                .or_default()
+                                .push(target_parent.clone());
+                            source = directory.parent();
+                        }
+                    }
+                }
+                item
+            })
             .collect();
+        for item in items
+            .iter_mut()
+            .filter(|item| item.file.kind == FileKind::Image)
+        {
+            let mut source = item.file.path.parent();
+            let mut candidates = Vec::new();
+            while let Some(directory) = source {
+                if let Some(values) = music_targets.get(directory) {
+                    candidates.extend(values.clone());
+                    break;
+                }
+                source = directory.parent();
+            }
+            candidates.sort();
+            candidates.dedup();
+            match candidates.as_slice() {
+                [parent] => {
+                    let parent = parent.clone();
+                    let name = item
+                        .file
+                        .path
+                        .file_name()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("image");
+                    item.target = Some(parent.join(sanitize_component(name)));
+                    item.action = PlanAction::Move;
+                    item.risk = Risk::None;
+                    item.reason = None;
+                }
+                [] => {
+                    item.risk = Risk::MetadataMissing;
+                    item.reason = Some("companion_without_music".into());
+                }
+                _ => {
+                    item.risk = Risk::Conflict;
+                    item.reason = Some("companion_target_ambiguous".into());
+                }
+            }
+        }
+        resolve_duplicate_targets(&mut items, &options.naming);
         mark_target_conflicts(&mut items);
         let conflicts = items
             .iter()
@@ -527,30 +634,64 @@ pub fn plan_snapshot_hash(items: &[PlanItem]) -> String {
     format!("{:x}", digest.finalize())
 }
 
-fn make_plan_item(ordinal: u64, file: ScannedFile, target_root: &Path) -> PlanItem {
+fn make_plan_item(
+    ordinal: u64,
+    file: ScannedFile,
+    target_root: &Path,
+    naming: &NamingRules,
+) -> PlanItem {
     let Some(metadata) = &file.metadata else {
         return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "metadata_missing");
     };
-    let Some(artist) = metadata
+    if metadata
         .album_artist
         .as_deref()
         .or(metadata.artist.as_deref())
-    else {
+        .is_none()
+    {
         return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "artist_missing");
-    };
-    let Some(album) = metadata.album.as_deref() else {
+    }
+    if metadata.album.is_none() {
         return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "album_missing");
-    };
-    let filename = file
+    }
+    let source_stem = file
         .path
-        .file_name()
+        .file_stem()
         .and_then(|value| value.to_str())
-        .map(sanitize_component)
-        .unwrap_or_else(|| "_".into());
+        .unwrap_or("_");
+    let extension = file
+        .path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|v| format!(".{v}"))
+        .unwrap_or_default();
+    let filename = if naming.use_source_filename {
+        file.path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("_")
+            .into()
+    } else {
+        render_template(&naming.filename_template, metadata, source_stem, &extension)
+    };
     let target = target_root
-        .join(sanitize_component(artist))
-        .join(sanitize_component(album))
-        .join(filename);
+        .join(sanitize_component(&render_template(
+            &naming.artist_dir_template,
+            metadata,
+            source_stem,
+            &extension,
+        )))
+        .join(sanitize_component(&render_template(
+            &naming.album_dir_template,
+            metadata,
+            source_stem,
+            &extension,
+        )))
+        .join(
+            render_template(&naming.disc_dir_template, metadata, source_stem, &extension)
+                .trim_matches([' ', '.']),
+        )
+        .join(sanitize_component(&filename));
     let (action, risk, reason) = if target == file.path {
         (
             PlanAction::Skip,
@@ -570,6 +711,66 @@ fn make_plan_item(ordinal: u64, file: ScannedFile, target_root: &Path) -> PlanIt
         action,
         risk,
         reason,
+    }
+}
+
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|v| v.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp")
+    )
+}
+
+fn resolve_duplicate_targets(items: &mut [PlanItem], naming: &NamingRules) {
+    let mut seen = HashMap::<String, u32>::new();
+    for item in items.iter_mut().filter(|i| i.action == PlanAction::Move) {
+        let Some(target) = item.target.clone() else {
+            continue;
+        };
+        let key = target.to_string_lossy().to_lowercase();
+        let count = seen.entry(key).or_insert(0);
+        *count += 1;
+        if *count > 1 {
+            if naming.duplicate_suffix_template.is_empty() && item.file.kind != FileKind::Image {
+                item.action = PlanAction::Skip;
+                item.risk = Risk::Conflict;
+                item.reason = Some("target_conflict".into());
+                continue;
+            }
+            let suffix = if item.file.kind == FileKind::Image {
+                format!("_{}", count)
+            } else {
+                let metadata = item.file.metadata.as_ref().expect("music metadata");
+                render_template(
+                    &naming.duplicate_suffix_template,
+                    metadata,
+                    item.file
+                        .path
+                        .file_stem()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("_"),
+                    "",
+                )
+            };
+            let next = target.with_file_name(format!(
+                "{}{}{}",
+                target.file_stem().and_then(|v| v.to_str()).unwrap_or("_"),
+                if suffix.is_empty() {
+                    format!("_{count}")
+                } else {
+                    suffix
+                },
+                target
+                    .extension()
+                    .and_then(|v| v.to_str())
+                    .map(|v| format!(".{v}"))
+                    .unwrap_or_default()
+            ));
+            item.target = Some(next);
+        }
     }
 }
 
@@ -596,6 +797,7 @@ mod snapshot_tests {
                 disc_no: None,
                 year: None,
             }),
+            kind: FileKind::Music,
         };
         let mut item = PlanItem {
             id: Uuid::nil(),

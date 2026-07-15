@@ -21,6 +21,11 @@ fn reads_japanese_tags_from_each_supported_format() {
             .read(&fixture(path))
             .unwrap_or_else(|error| panic!("{path}: {error}"));
         assert_eq!(tags.artist.as_deref(), Some("日本語アーティスト"), "{path}");
+        assert_eq!(
+            tags.album_artist.as_deref(),
+            Some("日本語アルバムアーティスト"),
+            "{path}"
+        );
         assert_eq!(tags.album.as_deref(), Some("テストアルバム"), "{path}");
         assert_eq!(tags.title.as_deref(), Some("楽曲"), "{path}");
     }

@@ -46,7 +46,18 @@ impl FileSystem for LocalFileSystem {
                     .and_then(|value| value.to_str())
                     .map(str::to_ascii_lowercase)
                     .as_deref(),
-                Some("flac" | "mp3" | "m4a" | "ogg")
+                Some(
+                    "flac"
+                        | "mp3"
+                        | "m4a"
+                        | "ogg"
+                        | "jpg"
+                        | "jpeg"
+                        | "png"
+                        | "webp"
+                        | "gif"
+                        | "bmp"
+                )
             ) && !visitor(Ok(entry.into_path()))
             {
                 break;

@@ -45,12 +45,137 @@ pub struct TrackMetadata {
     pub year: Option<i32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileKind {
+    Music,
+    Image,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedFile {
     pub id: Uuid,
     pub path: PathBuf,
     pub fingerprint: FileFingerprint,
     pub metadata: Option<TrackMetadata>,
+    pub kind: FileKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamingRules {
+    pub artist_dir_template: String,
+    pub album_dir_template: String,
+    pub disc_dir_template: String,
+    pub filename_template: String,
+    pub duplicate_suffix_template: String,
+    pub use_source_filename: bool,
+    pub use_source_image_filename: bool,
+}
+
+impl Default for NamingRules {
+    fn default() -> Self {
+        Self {
+            artist_dir_template: "{album_artist}".into(),
+            album_dir_template: "{album}".into(),
+            disc_dir_template: "[{disc_no:02d}]".into(),
+            filename_template: "[{track_no:02d}_]{title}{extension}".into(),
+            duplicate_suffix_template: "".into(),
+            use_source_filename: false,
+            use_source_image_filename: false,
+        }
+    }
+}
+
+pub fn render_template(
+    template: &str,
+    values: &TrackMetadata,
+    source_stem: &str,
+    extension: &str,
+) -> String {
+    fn field(
+        name: &str,
+        spec: Option<&str>,
+        values: &TrackMetadata,
+        source_stem: &str,
+        extension: &str,
+    ) -> Option<String> {
+        let text = match name {
+            "artist" => values.artist.clone(),
+            "album_artist" => values
+                .album_artist
+                .clone()
+                .or_else(|| values.artist.clone()),
+            "album" => values.album.clone(),
+            "title" => values.title.clone().or_else(|| Some(source_stem.into())),
+            "source_stem" => Some(source_stem.into()),
+            "extension" => Some(extension.into()),
+            "track_no" => values.track_no.map(|v| v.to_string()),
+            "disc_no" => values.disc_no.map(|v| v.to_string()),
+            "year" => values.year.map(|v| v.to_string()),
+            _ => None,
+        }?;
+        if let (Some(spec), Ok(number)) = (spec, text.parse::<u32>()) {
+            if let Some(width) = spec
+                .strip_prefix('0')
+                .and_then(|s| s.trim_end_matches('d').parse::<usize>().ok())
+            {
+                return Some(format!("{number:0width$}"));
+            }
+        }
+        Some(text)
+    }
+    fn render(
+        input: &str,
+        values: &TrackMetadata,
+        stem: &str,
+        ext: &str,
+        optional: bool,
+    ) -> (String, bool) {
+        let mut out = String::new();
+        let mut used = false;
+        let chars: Vec<char> = input.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' {
+                if let Some(end) = chars[i + 1..].iter().position(|c| *c == '}') {
+                    let token: String = chars[i + 1..i + 1 + end].iter().collect();
+                    let mut parts = token.splitn(2, ':');
+                    let value = field(
+                        parts.next().unwrap_or_default(),
+                        parts.next(),
+                        values,
+                        stem,
+                        ext,
+                    );
+                    if let Some(value) = value {
+                        used = true;
+                        out.push_str(&value);
+                    } else if !optional { /* missing fields render empty */
+                    }
+                    i += end + 2;
+                    continue;
+                }
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        (out, used)
+    }
+    let mut remaining = template.to_string();
+    while let Some(start) = remaining.find('[') {
+        let Some(relative_end) = remaining[start + 1..].find(']') else {
+            break;
+        };
+        let end = start + 1 + relative_end;
+        let (body, used) = render(
+            &remaining[start + 1..end],
+            values,
+            source_stem,
+            extension,
+            true,
+        );
+        remaining.replace_range(start..=end, if used { &body } else { "" });
+    }
+    render(&remaining, values, source_stem, extension, false).0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +294,27 @@ mod tests {
     #[test]
     fn detects_long_path() {
         assert!(assess_windows_path(Path::new(&"a".repeat(241))).is_err());
+    }
+    #[test]
+    fn renders_optional_numbered_template_with_album_artist_fallback() {
+        let metadata = TrackMetadata {
+            artist: Some("Artist".into()),
+            album_artist: None,
+            album: Some("Album".into()),
+            title: Some("Song".into()),
+            track_no: Some(3),
+            disc_no: None,
+            year: Some(2024),
+        };
+        assert_eq!(
+            render_template(
+                "{album_artist}/[{disc_no:02d}-]{track_no:02d}_{title}{extension}",
+                &metadata,
+                "source",
+                ".mp3"
+            ),
+            "Artist/03_Song.mp3"
+        );
     }
 }
 

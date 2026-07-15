@@ -6,7 +6,7 @@ File enumerator --bounded N1--> tag workers (max W) --bounded N2--> single SQLit
        +-------------- progress ----------+------------> Tauri event sink
 ```
 
-enumerator は `walkdir` 相当の iterator で一件ずつ送り、reparse point/非対象拡張子を item として記録する。tag workers はファイル stat と metadata cache を照合し、hit はタグ読取を省略、miss のみ lofty を呼ぶ。writer だけが scan item、metadata cache、metric をバッチ書込みする。これによりメモリ上の未処理件数は `N1 + W + N2 + batch` に上限化される。
+enumerator は `walkdir` 相当の iterator で一件ずつ送り、reparse point/非対象拡張子を item として記録する。音楽拡張子（FLAC/MP3/M4A/OGG）は tag worker へ、同梱 asset 拡張子（jpg/jpeg/png/webp/gif/bmp）は metadata 読取なしで writer へ送る。tag workers はファイル stat と metadata cache を照合し、hit はタグ読取を省略、miss のみ lofty を呼ぶ。writer だけが scan item、asset snapshot、metadata cache、metric をバッチ書込みする。これによりメモリ上の未処理件数は `N1 + W + N2 + batch` に上限化される。
 
 初期値は `W = min(8, max(2, logical_cpu_count))`、N1/N2 は各 `W * 4`。HDD/ネットワークでは設定 profile が W を 2 に下げられる。progress は throttling（例: 100ms）し、列挙/読取/書込みの件数・bytes・elapsed を送る。キャンセル時は producer を停止し、既に writer に届いた batch を commit、run を `cancelled` とする。
 

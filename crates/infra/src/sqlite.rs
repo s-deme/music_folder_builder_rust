@@ -1,6 +1,10 @@
 use music_folder_core::{
-    ports::{ApplyStore, PlanStore, RollbackStore, ScanStore, VerifyStore},
-    ApplyItem, FileFingerprint, OperationLog, PlanAction, PlanItem, Risk, ScannedFile,
+    assess_windows_path,
+    ports::{
+        ApplyStore, ManualTargetChange, PlanRevisionStore, PlanStore, RollbackStore, ScanStore,
+        VerifyStore,
+    },
+    ApplyItem, FileFingerprint, FileKind, OperationLog, PlanAction, PlanItem, Risk, ScannedFile,
     TrackMetadata, VerifyItem,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -57,6 +61,13 @@ pub struct MetricRow {
     pub elapsed_ms: u64,
     pub item_count: u64,
 }
+#[derive(serde::Serialize)]
+pub struct HistoryCleanupPreview {
+    pub plans: u64,
+    pub executions: u64,
+    pub logs: u64,
+    pub blocked: bool,
+}
 
 pub struct SqliteScanStore {
     connection: Mutex<Connection>,
@@ -67,11 +78,11 @@ impl SqliteScanStore {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
           CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY, source_root TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, warning_count INTEGER NOT NULL DEFAULT 0);
-          CREATE TABLE IF NOT EXISTS library_files (path TEXT PRIMARY KEY, size_bytes INTEGER NOT NULL, mtime_ns TEXT NOT NULL, metadata_json TEXT, metadata_status TEXT NOT NULL, last_seen_scan_id TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS library_files (path TEXT PRIMARY KEY, size_bytes INTEGER NOT NULL, mtime_ns TEXT NOT NULL, metadata_json TEXT, metadata_status TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'music', last_seen_scan_id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS scan_items (scan_id TEXT NOT NULL REFERENCES scan_runs(id), path TEXT NOT NULL, PRIMARY KEY(scan_id,path));
           CREATE TABLE IF NOT EXISTS scan_warnings (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id), warning TEXT NOT NULL, created_at INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS plan_runs (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id), target_root TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, conflict_count INTEGER NOT NULL DEFAULT 0, risk_count INTEGER NOT NULL DEFAULT 0, snapshot_hash TEXT);
-          CREATE TABLE IF NOT EXISTS plan_items (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), ordinal INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, action TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT);
+          CREATE TABLE IF NOT EXISTS plan_runs (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id), parent_plan_id TEXT, target_root TEXT NOT NULL, rules_json TEXT, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, conflict_count INTEGER NOT NULL DEFAULT 0, risk_count INTEGER NOT NULL DEFAULT 0, snapshot_hash TEXT);
+          CREATE TABLE IF NOT EXISTS plan_items (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), ordinal INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, target_origin TEXT NOT NULL DEFAULT 'rule', action TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT);
           CREATE TABLE IF NOT EXISTS execution_runs (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), mode TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, success_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS operation_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), plan_item_id TEXT NOT NULL REFERENCES plan_items(id), sequence_no INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, action TEXT NOT NULL, result TEXT NOT NULL, error TEXT, source_deleted INTEGER NOT NULL, expected_size INTEGER, created_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS verify_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), operation_id TEXT NOT NULL REFERENCES operation_logs(id), result TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL);
@@ -117,6 +128,48 @@ impl SqliteScanStore {
             connection
                 .execute_batch("ALTER TABLE operation_logs ADD COLUMN expected_size INTEGER;")
                 .map_err(|error| error.to_string())?;
+        }
+        let has_kind = connection
+            .prepare("PRAGMA table_info(library_files)")
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|name| name == "kind");
+        if !has_kind {
+            connection
+                .execute_batch(
+                    "ALTER TABLE library_files ADD COLUMN kind TEXT NOT NULL DEFAULT 'music';",
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        for (table, column, definition) in [
+            ("plan_runs", "parent_plan_id", "TEXT"),
+            ("plan_runs", "rules_json", "TEXT"),
+            (
+                "plan_items",
+                "target_origin",
+                "TEXT NOT NULL DEFAULT 'rule'",
+            ),
+        ] {
+            let exists = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .and_then(|mut s| {
+                    s.query_map([], |r| r.get::<_, String>(1))?
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|e| e.to_string())?
+                .iter()
+                .any(|name| name == column);
+            if !exists {
+                connection
+                    .execute_batch(&format!(
+                        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
         }
         connection
             .execute(
@@ -272,6 +325,153 @@ impl SqliteScanStore {
             .map_err(|e| e.to_string())?;
         Ok(rows)
     }
+    pub fn delete_history(&self, kind: &str, id: &str) -> Result<(), String> {
+        let mut conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let running: Option<String> = match kind {
+            "scan" => conn
+                .query_row(
+                    "SELECT id FROM scan_runs WHERE id=?1 AND status='running'",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional(),
+            "plan" => conn
+                .query_row(
+                    "SELECT id FROM plan_runs WHERE id=?1 AND status='running'",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional(),
+            "apply" => conn
+                .query_row(
+                    "SELECT id FROM execution_runs WHERE id=?1 AND status='running'",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional(),
+            "verify" => conn
+                .query_row(
+                    "SELECT id FROM verify_runs WHERE id=?1 AND status='running'",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional(),
+            "rollback" => conn
+                .query_row(
+                    "SELECT id FROM rollback_runs WHERE id=?1 AND status='running'",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional(),
+            _ => return Err("invalid_run_kind".into()),
+        }
+        .map_err(|e| e.to_string())?;
+        if running.is_some() {
+            return Err("running_run_cannot_be_deleted".into());
+        }
+        // A parent deletion must include all dependent plans/executions.  Refuse it
+        // whenever any descendant is active; completed history is then deleted in
+        // child-to-parent order below.
+        if matches!(kind, "scan" | "plan") {
+            let seed = if kind == "scan" { "scan_id" } else { "id" };
+            let sql = format!("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE {seed}=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) SELECT 1 FROM plan_runs WHERE id IN (SELECT id FROM plans) AND status='running' UNION ALL SELECT 1 FROM execution_runs WHERE plan_id IN (SELECT id FROM plans) AND status='running' UNION ALL SELECT 1 FROM verify_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans)) AND status='running' UNION ALL SELECT 1 FROM rollback_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans)) AND status='running' LIMIT 1");
+            let active: Option<i64> = conn
+                .query_row(&sql, params![id], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if active.is_some() {
+                return Err("dependent_running_run_cannot_be_deleted".into());
+            }
+        }
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        match kind {
+            "scan" => {
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM verify_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM rollback_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM verify_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM rollback_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM operation_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM execution_runs WHERE plan_id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM plan_items WHERE plan_id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE scan_id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM plan_runs WHERE id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("DELETE FROM scan_items WHERE scan_id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM scan_warnings WHERE scan_id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM scan_runs WHERE id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+            }
+            "plan" => {
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM verify_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM rollback_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM verify_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM rollback_runs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM operation_logs WHERE execution_id IN (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans))", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM execution_runs WHERE plan_id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM plan_items WHERE plan_id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("WITH RECURSIVE plans(id) AS (SELECT id FROM plan_runs WHERE id=?1 UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id) DELETE FROM plan_runs WHERE id IN (SELECT id FROM plans)", params![id]).map_err(|e|e.to_string())?;
+            }
+            "apply" => {
+                tx.execute("DELETE FROM verify_logs WHERE execution_id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM rollback_logs WHERE execution_id=?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM verify_runs WHERE execution_id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM rollback_runs WHERE execution_id=?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM operation_logs WHERE execution_id=?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM execution_runs WHERE id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+            }
+            "verify" => {
+                tx.execute("DELETE FROM verify_logs WHERE execution_id=(SELECT execution_id FROM verify_runs WHERE id=?1)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("DELETE FROM verify_runs WHERE id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+            }
+            "rollback" => {
+                tx.execute("DELETE FROM rollback_logs WHERE execution_id=(SELECT execution_id FROM rollback_runs WHERE id=?1)", params![id]).map_err(|e|e.to_string())?;
+                tx.execute("DELETE FROM rollback_runs WHERE id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => unreachable!(),
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+    pub fn history_cleanup_preview(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Result<HistoryCleanupPreview, String> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let seed = match kind { "scan" => "SELECT id FROM plan_runs WHERE scan_id=?1", "plan" => "SELECT id FROM plan_runs WHERE id=?1", "apply" => "SELECT plan_id FROM execution_runs WHERE id=?1", "verify" => "SELECT plan_id FROM execution_runs WHERE id=(SELECT execution_id FROM verify_runs WHERE id=?1)", "rollback" => "SELECT plan_id FROM execution_runs WHERE id=(SELECT execution_id FROM rollback_runs WHERE id=?1)", _ => return Err("invalid_run_kind".into()) };
+        let sql = format!("WITH RECURSIVE plans(id) AS ({seed} UNION ALL SELECT p.id FROM plan_runs p JOIN plans q ON p.parent_plan_id=q.id), executions(id) AS (SELECT id FROM execution_runs WHERE plan_id IN (SELECT id FROM plans)) SELECT (SELECT COUNT(*) FROM plans),(SELECT COUNT(*) FROM executions),(SELECT COUNT(*) FROM operation_logs WHERE execution_id IN (SELECT id FROM executions)) + (SELECT COUNT(*) FROM verify_logs WHERE execution_id IN (SELECT id FROM executions)) + (SELECT COUNT(*) FROM rollback_logs WHERE execution_id IN (SELECT id FROM executions)), EXISTS(SELECT 1 FROM plan_runs WHERE id IN (SELECT id FROM plans) AND status='running') OR EXISTS(SELECT 1 FROM execution_runs WHERE id IN (SELECT id FROM executions) AND status='running') OR EXISTS(SELECT 1 FROM verify_runs WHERE execution_id IN (SELECT id FROM executions) AND status='running') OR EXISTS(SELECT 1 FROM rollback_runs WHERE execution_id IN (SELECT id FROM executions) AND status='running')");
+        conn.query_row(&sql, params![id], |r| {
+            Ok(HistoryCleanupPreview {
+                plans: r.get::<_, i64>(0)? as u64,
+                executions: r.get::<_, i64>(1)? as u64,
+                logs: r.get::<_, i64>(2)? as u64,
+                blocked: r.get::<_, i64>(3)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())
+    }
     fn record_metric_row(
         &self,
         run_id: &str,
@@ -328,7 +528,7 @@ impl ScanStore for SqliteScanStore {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| e.to_string())?;
-            tx.execute("INSERT INTO library_files(path,size_bytes,mtime_ns,metadata_json,metadata_status,last_seen_scan_id) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(path) DO UPDATE SET size_bytes=excluded.size_bytes,mtime_ns=excluded.mtime_ns,metadata_json=excluded.metadata_json,metadata_status=excluded.metadata_status,last_seen_scan_id=excluded.last_seen_scan_id",params![f.path.to_string_lossy(),f.fingerprint.size_bytes as i64,f.fingerprint.mtime_ns.to_string(),json,if f.metadata.is_some(){"ok"}else{"error"},scan_id]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO library_files(path,size_bytes,mtime_ns,metadata_json,metadata_status,kind,last_seen_scan_id) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(path) DO UPDATE SET size_bytes=excluded.size_bytes,mtime_ns=excluded.mtime_ns,metadata_json=excluded.metadata_json,metadata_status=excluded.metadata_status,kind=excluded.kind,last_seen_scan_id=excluded.last_seen_scan_id",params![f.path.to_string_lossy(),f.fingerprint.size_bytes as i64,f.fingerprint.mtime_ns.to_string(),json,if f.metadata.is_some(){"ok"}else{"error"},if f.kind == FileKind::Image {"image"} else {"music"},scan_id]).map_err(|e|e.to_string())?;
             tx.execute(
                 "INSERT OR IGNORE INTO scan_items(scan_id,path) VALUES(?1,?2)",
                 params![scan_id, f.path.to_string_lossy()],
@@ -387,7 +587,7 @@ impl PlanStore for SqliteScanStore {
         if completed.is_none() {
             return Err("scan_not_completed".into());
         }
-        let mut statement = conn.prepare("SELECT f.path,f.size_bytes,f.mtime_ns,f.metadata_json FROM scan_items s JOIN library_files f ON f.path=s.path WHERE s.scan_id=?1 ORDER BY f.path").map_err(|error| error.to_string())?;
+        let mut statement = conn.prepare("SELECT f.path,f.size_bytes,f.mtime_ns,f.metadata_json,f.kind FROM scan_items s JOIN library_files f ON f.path=s.path WHERE s.scan_id=?1 ORDER BY f.path").map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(params![scan_id], |row| {
                 let metadata_json: Option<String> = row.get(3)?;
@@ -399,6 +599,11 @@ impl PlanStore for SqliteScanStore {
                         mtime_ns: row.get::<_, String>(2)?.parse().unwrap_or_default(),
                     },
                     metadata: metadata_json.and_then(|json| serde_json::from_str(&json).ok()),
+                    kind: if row.get::<_, String>(4)? == "image" {
+                        FileKind::Image
+                    } else {
+                        FileKind::Music
+                    },
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -406,9 +611,15 @@ impl PlanStore for SqliteScanStore {
             .map_err(|error| error.to_string())
     }
 
-    fn begin_plan(&self, scan_id: &str, target_root: &Path) -> Result<String, String> {
+    fn begin_plan(
+        &self,
+        scan_id: &str,
+        target_root: &Path,
+        naming: &music_folder_core::NamingRules,
+    ) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
-        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO plan_runs(id,scan_id,target_root,status,started_at) VALUES(?1,?2,?3,'running',?4)", params![id,scan_id,target_root.to_string_lossy(),now()]).map_err(|error| error.to_string())?;
+        let rules = serde_json::to_string(naming).map_err(|e| e.to_string())?;
+        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO plan_runs(id,scan_id,target_root,rules_json,status,started_at) VALUES(?1,?2,?3,?4,'running',?5)", params![id,scan_id,target_root.to_string_lossy(),rules,now()]).map_err(|error| error.to_string())?;
         Ok(id)
     }
 
@@ -442,6 +653,104 @@ impl PlanStore for SqliteScanStore {
         item_count: u64,
     ) -> Result<(), String> {
         self.record_metric_row(run_id, phase, elapsed_ms, item_count)
+    }
+}
+
+impl PlanRevisionStore for SqliteScanStore {
+    fn revise_plan(
+        &self,
+        parent_plan_id: &str,
+        changes: &[ManualTargetChange],
+    ) -> Result<String, String> {
+        let mut conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let _parent: (String, String) = conn
+            .query_row(
+                "SELECT scan_id,target_root FROM plan_runs WHERE id=?1 AND status='completed'",
+                params![parent_plan_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "parent_plan_not_completed".to_string())?;
+        let mut source = conn.prepare("SELECT id,ordinal,source_path,target_path,action,risk,reason FROM plan_items WHERE plan_id=?1 ORDER BY ordinal").map_err(|e|e.to_string())?;
+        let rows = source
+            .query_map(params![parent_plan_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(source);
+        let overrides: std::collections::HashMap<_, _> = changes
+            .iter()
+            .map(|c| (c.plan_item_id.as_str(), c))
+            .collect();
+        let id = Uuid::new_v4().to_string();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO plan_runs(id,scan_id,parent_plan_id,target_root,rules_json,status,started_at) SELECT ?1,scan_id,id,target_root,rules_json,'running',?2 FROM plan_runs WHERE id=?3", params![id,now(),parent_plan_id]).map_err(|e|e.to_string())?;
+        let mut digest = Sha256::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut conflicts = 0u64;
+        let mut risks = 0u64;
+        for (old_id, ordinal, source_path, old_target, mut action, mut risk, mut reason) in rows {
+            let (target, origin) = if let Some(change) = overrides.get(old_id.as_str()) {
+                let target = change.target.to_string_lossy().into_owned();
+                if target == source_path || assess_windows_path(&change.target).is_err() {
+                    action = "skip".into();
+                    risk = "invalid_target".into();
+                    reason = Some(change.reason.clone());
+                    (Some(target), "manual")
+                } else {
+                    (Some(target), "manual")
+                }
+            } else {
+                (old_target, "rule")
+            };
+            if action == "move" {
+                if let Some(target) = &target {
+                    if !seen.insert(target.to_lowercase()) {
+                        action = "skip".into();
+                        risk = "conflict".into();
+                        reason = Some("target_conflict".into());
+                        conflicts += 1;
+                    }
+                }
+            }
+            if risk != "none" {
+                risks += 1;
+            }
+            let new_item = Uuid::new_v4().to_string();
+            tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,target_origin,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![new_item,id,ordinal,source_path,target,origin,action,risk,reason]).map_err(|e|e.to_string())?;
+            digest.update((ordinal as u64).to_le_bytes());
+            digest.update(source_path.as_bytes());
+            digest.update([0]);
+            if let Some(t) = target {
+                digest.update(t.as_bytes())
+            };
+            digest.update([0]);
+            digest.update(action.as_bytes());
+            digest.update([0]);
+            digest.update(risk.as_bytes());
+            digest.update([0]);
+            if let Some(r) = reason {
+                digest.update(r.as_bytes())
+            };
+            digest.update([0xff]);
+        }
+        tx.execute("UPDATE plan_runs SET status='completed',finished_at=?2,conflict_count=?3,risk_count=?4,snapshot_hash=?5 WHERE id=?1",params![id,now(),conflicts as i64,risks as i64,format!("{:x}",digest.finalize())]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(id)
     }
 }
 

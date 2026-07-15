@@ -1,5 +1,6 @@
 use crate::{
-    ApplyItem, FileFingerprint, OperationLog, PlanItem, ScannedFile, TrackMetadata, VerifyItem,
+    ApplyItem, FileFingerprint, NamingRules, OperationLog, PlanItem, ScannedFile, TrackMetadata,
+    VerifyItem,
 };
 use std::path::Path;
 
@@ -42,7 +43,12 @@ pub trait FileSystem: Send + Sync {
 
 pub trait PlanStore: Send + Sync {
     fn load_completed_scan(&self, scan_id: &str) -> Result<Vec<ScannedFile>, String>;
-    fn begin_plan(&self, scan_id: &str, target_root: &Path) -> Result<String, String>;
+    fn begin_plan(
+        &self,
+        scan_id: &str,
+        target_root: &Path,
+        naming: &NamingRules,
+    ) -> Result<String, String>;
     fn save_plan_items(&self, plan_id: &str, items: &[PlanItem]) -> Result<(), String>;
     fn finish_plan(
         &self,
@@ -60,6 +66,22 @@ pub trait PlanStore: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualTargetChange {
+    pub plan_item_id: String,
+    pub target: std::path::PathBuf,
+    pub reason: String,
+}
+
+pub trait PlanRevisionStore: Send + Sync {
+    /// Creates a new immutable completed plan from a completed parent plan.
+    fn revise_plan(
+        &self,
+        parent_plan_id: &str,
+        changes: &[ManualTargetChange],
+    ) -> Result<String, String>;
 }
 
 pub trait ApplyStore: Send + Sync {

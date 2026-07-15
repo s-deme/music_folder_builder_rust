@@ -1,6 +1,7 @@
+use music_folder_core::ports::ManualTargetChange;
 use music_folder_core::usecases::{
-    ApplyUseCase, CancellationToken, PlanOptions, PlanUseCase, RollbackUseCase, ScanOptions,
-    ScanUseCase, VerifyUseCase,
+    ApplyUseCase, CancellationToken, PlanOptions, PlanUseCase, RevisePlanUseCase, RollbackUseCase,
+    ScanOptions, ScanUseCase, VerifyUseCase,
 };
 use music_folder_infra::{
     lofty_reader::LoftyMetadataReader, sqlite::SqliteScanStore, windows_fs::LocalFileSystem,
@@ -49,6 +50,7 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         &PlanOptions {
             target_root: target.clone(),
             batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
         },
     )
     .unwrap();
@@ -191,4 +193,170 @@ fn cancelled_scan_commits_received_work_and_records_cancelled_status() {
     assert!(history
         .iter()
         .any(|row| row.id == result.scan_id && row.status == "cancelled"));
+}
+
+#[test]
+fn plan_moves_companion_image_to_music_target_directory() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("track.mp3")).unwrap();
+    fs::write(source.join("cover.jpg"), b"fixture image").unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    assert_eq!(scan.files, 2);
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+    let items = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].action, "move");
+    assert!(items[0]
+        .target_path
+        .as_deref()
+        .unwrap()
+        .ends_with("cover.jpg"));
+}
+
+#[test]
+fn manual_target_creates_immutable_child_plan() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("track.mp3")).unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let parent = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target.clone(),
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+    let parent_item = store
+        .list_plan_items(&parent.plan_id, None, 1, None, None)
+        .unwrap()
+        .remove(0);
+    let manual_target = target
+        .join("Manual Artist")
+        .join("Manual Album")
+        .join("manual.mp3");
+    let child = RevisePlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &parent.plan_id,
+        &[ManualTargetChange {
+            plan_item_id: parent_item.id,
+            target: manual_target.clone(),
+            reason: "test".into(),
+        }],
+    )
+    .unwrap();
+    let parent_after = store
+        .list_plan_items(&parent.plan_id, None, 1, None, None)
+        .unwrap();
+    assert_ne!(
+        parent_after[0].target_path.as_deref(),
+        Some(manual_target.to_string_lossy().as_ref())
+    );
+    let child_item = store.list_plan_items(&child, None, 1, None, None).unwrap();
+    assert_eq!(
+        child_item[0].target_path.as_deref(),
+        Some(manual_target.to_string_lossy().as_ref())
+    );
+    let applied = ApplyUseCase {
+        store,
+        files: Arc::new(LocalFileSystem),
+    }
+    .execute(&child, false)
+    .unwrap();
+    assert_eq!(applied.success, 1);
+    assert!(manual_target.exists());
+}
+
+#[test]
+fn deleting_parent_plan_removes_descendants_without_touching_files() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    let original = source.join("track.mp3");
+    fs::copy(fixture("mp3/japanese.mp3"), &original).unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let parent = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+    let item = store
+        .list_plan_items(&parent.plan_id, None, 1, None, None)
+        .unwrap()
+        .remove(0);
+    let child = RevisePlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &parent.plan_id,
+        &[ManualTargetChange {
+            plan_item_id: item.id,
+            target: temp.path().join("manual.mp3"),
+            reason: "test".into(),
+        }],
+    )
+    .unwrap();
+    store.delete_history("plan", &parent.plan_id).unwrap();
+    assert!(original.exists());
+    assert_eq!(
+        store.get_run_detail("plan", &parent.plan_id).unwrap_err(),
+        "run_not_found"
+    );
+    assert_eq!(
+        store.get_run_detail("plan", &child).unwrap_err(),
+        "run_not_found"
+    );
 }

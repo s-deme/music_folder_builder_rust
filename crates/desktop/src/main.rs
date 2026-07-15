@@ -1,3 +1,4 @@
+use music_folder_core::ports::ManualTargetChange;
 use music_folder_core::usecases::{
     ApplyUseCase, PlanOptions, PlanUseCase, RollbackUseCase, ScanOptions, ScanUseCase,
     VerifyUseCase,
@@ -241,6 +242,7 @@ fn create_plan(
     scan_id: String,
     target: String,
     database: String,
+    naming: Option<music_folder_core::NamingRules>,
 ) -> Result<WorkflowResponse, String> {
     let result = PlanUseCase {
         store: store(&database)?,
@@ -250,6 +252,7 @@ fn create_plan(
         &PlanOptions {
             target_root: PathBuf::from(target),
             batch_size: 250,
+            naming: naming.unwrap_or_default(),
         },
     )?;
     Ok(WorkflowResponse {
@@ -257,6 +260,31 @@ fn create_plan(
         success: result.items,
         skipped: result.conflicts,
         failed: result.risks,
+    })
+}
+#[tauri::command]
+fn revise_plan_target(
+    database: String,
+    plan_id: String,
+    plan_item_id: String,
+    target: String,
+) -> Result<WorkflowResponse, String> {
+    let id = music_folder_core::usecases::RevisePlanUseCase {
+        store: store(&database)?,
+    }
+    .execute(
+        &plan_id,
+        &[ManualTargetChange {
+            plan_item_id,
+            target: PathBuf::from(target),
+            reason: "manual_target".into(),
+        }],
+    )?;
+    Ok(WorkflowResponse {
+        id,
+        success: 0,
+        skipped: 0,
+        failed: 0,
     })
 }
 #[tauri::command]
@@ -308,6 +336,18 @@ fn rollback_execution(
         skipped: result.skipped,
         failed: result.failed,
     })
+}
+#[tauri::command]
+fn delete_history(database: String, kind: String, run_id: String) -> Result<(), String> {
+    store(&database)?.delete_history(&kind, &run_id)
+}
+#[tauri::command]
+fn history_cleanup_preview(
+    database: String,
+    kind: String,
+    run_id: String,
+) -> Result<music_folder_infra::sqlite::HistoryCleanupPreview, String> {
+    store(&database)?.history_cleanup_preview(&kind, &run_id)
 }
 #[tauri::command]
 fn list_history(
@@ -369,9 +409,12 @@ fn main() {
             scan_status,
             cancel_scan,
             create_plan,
+            revise_plan_target,
             apply_plan,
             verify_execution,
             rollback_execution,
+            delete_history,
+            history_cleanup_preview,
             list_history,
             get_run_detail,
             list_plan_items,

@@ -31,6 +31,20 @@ enum Command {
         target: PathBuf,
         #[arg(long, default_value = "music-folder.db")]
         db: PathBuf,
+        #[arg(long)]
+        artist_dir_template: Option<String>,
+        #[arg(long)]
+        album_dir_template: Option<String>,
+        #[arg(long)]
+        disc_dir_template: Option<String>,
+        #[arg(long)]
+        filename_template: Option<String>,
+        #[arg(long)]
+        duplicate_suffix_template: Option<String>,
+        #[arg(long)]
+        use_source_filename: bool,
+        #[arg(long)]
+        use_source_image_filename: bool,
     },
     Apply {
         #[arg(long)]
@@ -96,14 +110,40 @@ fn main() -> anyhow::Result<()> {
             scan_run_id,
             target,
             db,
+            artist_dir_template,
+            album_dir_template,
+            disc_dir_template,
+            filename_template,
+            duplicate_suffix_template,
+            use_source_filename,
+            use_source_image_filename,
         } => {
             let store = Arc::new(SqliteScanStore::open(&db).map_err(anyhow::Error::msg)?);
+            let mut naming = music_folder_core::NamingRules::default();
+            if let Some(value) = artist_dir_template {
+                naming.artist_dir_template = value;
+            }
+            if let Some(value) = album_dir_template {
+                naming.album_dir_template = value;
+            }
+            if let Some(value) = disc_dir_template {
+                naming.disc_dir_template = value;
+            }
+            if let Some(value) = filename_template {
+                naming.filename_template = value;
+            }
+            if let Some(value) = duplicate_suffix_template {
+                naming.duplicate_suffix_template = value;
+            }
+            naming.use_source_filename = use_source_filename;
+            naming.use_source_image_filename = use_source_image_filename;
             let result = PlanUseCase { store }
                 .execute(
                     &scan_run_id,
                     &PlanOptions {
                         target_root: target,
                         batch_size: 250,
+                        naming,
                     },
                 )
                 .map_err(anyhow::Error::msg)?;

@@ -19,5 +19,8 @@ Windows 向け音楽ライブラリ整理ツールの後継。既存 Python プ�
 
 ## Validation
 
-- 実装時は `cargo fmt --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace` を実行する。
+- WSL ホストに Rust/Node.js が入っていないことは正常である。Rust/Node.js の有無や検証可否は、ホストのコマンド結果だけで判断してはならない。
+- ローカルの正規検証環境は Docker Compose の `dev` コンテナである。任意の `docker compose run` の失敗をコンテナ全体の toolchain 不在と解釈せず、必ず `make validate`、または README 記載の等価な Docker Compose コマンドで確認する。
+- 実装時は `make validate` を実行する。ホストに `make` がない場合は README 記載の等価な Docker Compose コマンドを実行する。いずれも Docker 内で `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、UI typecheck、UI production build を実行する。
 - Windows 固有の統合テストを CI の Windows runner で実行する。
+- 報告時は「今回ローカルで実行できなかった」と「プロジェクトが未検証」を区別し、GitHub Actions の既存成功結果がある場合はその範囲を明記する。
