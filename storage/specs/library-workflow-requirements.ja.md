@@ -86,6 +86,10 @@ WHEN run が進行・完了・中断する場合、THEN システム SHALL 状�
 
 WHEN UI が plan または履歴一覧を表示する場合、THEN システム SHALL cursor/page API と仮想スクロールを用い、全 item を WebView へ一括送信しない。
 
+WHEN UI が plan 一覧を表示する場合、THEN システム SHALL plan 全件数、現在の検索・filterに該当する件数、WebViewへ読込済みの件数、および risk/action 別件数を区別して表示する。
+
+WHEN UI が長い source/target path を表示する場合、THEN システム SHALL 一覧全体を横方向へ拡張せず、source、target、理由を識別可能なラベルと省略・展開可能な表示を提供する。
+
 ### REQ-UI-002: 操作導線
 
 WHEN 利用者が実行操作を選択する場合、THEN UI SHALL Scan、Plan、Dry-run、Apply、Verify、Rollback を段階表示し、dry-run と本実行を色・文言・確認操作で区別する。

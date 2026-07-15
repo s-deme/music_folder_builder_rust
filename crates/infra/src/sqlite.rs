@@ -33,7 +33,7 @@ pub struct RunDetailRow {
     pub skipped: u64,
     pub failed: u64,
 }
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct PlanItemRow {
     pub id: String,
     pub ordinal: u64,
@@ -42,6 +42,24 @@ pub struct PlanItemRow {
     pub action: String,
     pub risk: String,
     pub reason: Option<String>,
+}
+#[derive(Debug, Default, serde::Serialize)]
+pub struct PlanItemCounts {
+    pub moves: u64,
+    pub skips: u64,
+    pub needs_attention: u64,
+    pub conflicts: u64,
+    pub invalid_target: u64,
+    pub metadata_missing: u64,
+    pub path_too_long: u64,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct PlanItemPage {
+    pub items: Vec<PlanItemRow>,
+    pub total: u64,
+    pub filtered_total: u64,
+    pub next_cursor: Option<u64>,
+    pub counts: PlanItemCounts,
 }
 #[derive(serde::Serialize)]
 pub struct OperationLogRow {
@@ -239,7 +257,7 @@ impl SqliteScanStore {
         limit: u32,
         query: Option<&str>,
         risk: Option<&str>,
-    ) -> Result<Vec<PlanItemRow>, String> {
+    ) -> Result<PlanItemPage, String> {
         let conn = self
             .connection
             .lock()
@@ -247,10 +265,51 @@ impl SqliteScanStore {
         let after = after_ordinal.unwrap_or(0) as i64;
         let needle = query.unwrap_or("");
         let wanted_risk = risk.unwrap_or("");
+        let page_size = limit.clamp(1, 500) as usize;
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plan_items WHERE plan_id=?1",
+                params![plan_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())? as u64;
+        let filtered_total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plan_items WHERE plan_id=?1 AND (?2='' OR source_path LIKE '%' || ?2 || '%' OR target_path LIKE '%' || ?2 || '%') AND (?3='' OR risk=?3)",
+                params![plan_id, needle, wanted_risk],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())? as u64;
+        let counts = conn
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN action='move' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN action='skip' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN risk<>'none' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN risk='conflict' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN risk='invalid_target' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN risk='metadata_missing' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN risk='path_too_long' THEN 1 ELSE 0 END)
+                 FROM plan_items
+                 WHERE plan_id=?1 AND (?2='' OR source_path LIKE '%' || ?2 || '%' OR target_path LIKE '%' || ?2 || '%')",
+                params![plan_id, needle],
+                |row| {
+                    Ok(PlanItemCounts {
+                        moves: row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
+                        skips: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                        needs_attention: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                        conflicts: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                        invalid_target: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+                        metadata_missing: row.get::<_, Option<i64>>(5)?.unwrap_or(0) as u64,
+                        path_too_long: row.get::<_, Option<i64>>(6)?.unwrap_or(0) as u64,
+                    })
+                },
+            )
+            .map_err(|error| error.to_string())?;
         let mut stmt = conn.prepare("SELECT id,ordinal,source_path,target_path,action,risk,reason FROM plan_items WHERE plan_id=?1 AND ordinal>?2 AND (?3='' OR source_path LIKE '%' || ?3 || '%' OR target_path LIKE '%' || ?3 || '%') AND (?4='' OR risk=?4) ORDER BY ordinal ASC LIMIT ?5").map_err(|e|e.to_string())?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map(
-                params![plan_id, after, needle, wanted_risk, limit.min(500) as i64],
+                params![plan_id, after, needle, wanted_risk, (page_size + 1) as i64],
                 |r| {
                     Ok(PlanItemRow {
                         id: r.get(0)?,
@@ -266,7 +325,16 @@ impl SqliteScanStore {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        Ok(rows)
+        let has_more = rows.len() > page_size;
+        rows.truncate(page_size);
+        let next_cursor = has_more.then(|| rows.last().expect("non-empty full page").ordinal);
+        Ok(PlanItemPage {
+            items: rows,
+            total,
+            filtered_total,
+            next_cursor,
+            counts,
+        })
     }
     pub fn list_operation_logs(
         &self,

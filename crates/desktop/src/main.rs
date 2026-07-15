@@ -388,7 +388,7 @@ fn list_plan_items(
     limit: u32,
     query: Option<String>,
     risk: Option<String>,
-) -> Result<Vec<music_folder_infra::sqlite::PlanItemRow>, String> {
+) -> Result<music_folder_infra::sqlite::PlanItemPage, String> {
     store(&database)?.list_plan_items(&plan_id, cursor, limit, query.as_deref(), risk.as_deref())
 }
 #[tauri::command]

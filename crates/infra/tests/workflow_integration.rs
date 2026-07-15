@@ -224,9 +224,15 @@ fn plan_moves_companion_image_to_music_target_directory() {
         },
     )
     .unwrap();
-    let items = store
+    let page = store
         .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
         .unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.filtered_total, 1);
+    assert_eq!(page.counts.moves, 1);
+    assert_eq!(page.counts.skips, 0);
+    assert_eq!(page.next_cursor, None);
+    let items = page.items;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].action, "move");
     assert!(items[0]
@@ -234,6 +240,17 @@ fn plan_moves_companion_image_to_music_target_directory() {
         .as_deref()
         .unwrap()
         .ends_with("cover.jpg"));
+    let first_page = store
+        .list_plan_items(&plan.plan_id, None, 1, None, None)
+        .unwrap();
+    assert_eq!(first_page.total, 2);
+    assert_eq!(first_page.filtered_total, 2);
+    assert_eq!(first_page.items.len(), 1);
+    let second_page = store
+        .list_plan_items(&plan.plan_id, first_page.next_cursor, 1, None, None)
+        .unwrap();
+    assert_eq!(second_page.items.len(), 1);
+    assert_eq!(second_page.next_cursor, None);
 }
 
 #[test]
@@ -266,6 +283,7 @@ fn manual_target_creates_immutable_child_plan() {
     let parent_item = store
         .list_plan_items(&parent.plan_id, None, 1, None, None)
         .unwrap()
+        .items
         .remove(0);
     let manual_target = target
         .join("Manual Artist")
@@ -285,12 +303,16 @@ fn manual_target_creates_immutable_child_plan() {
     .unwrap();
     let parent_after = store
         .list_plan_items(&parent.plan_id, None, 1, None, None)
-        .unwrap();
+        .unwrap()
+        .items;
     assert_ne!(
         parent_after[0].target_path.as_deref(),
         Some(manual_target.to_string_lossy().as_ref())
     );
-    let child_item = store.list_plan_items(&child, None, 1, None, None).unwrap();
+    let child_item = store
+        .list_plan_items(&child, None, 1, None, None)
+        .unwrap()
+        .items;
     assert_eq!(
         child_item[0].target_path.as_deref(),
         Some(manual_target.to_string_lossy().as_ref())
@@ -336,6 +358,7 @@ fn deleting_parent_plan_removes_descendants_without_touching_files() {
     let item = store
         .list_plan_items(&parent.plan_id, None, 1, None, None)
         .unwrap()
+        .items
         .remove(0);
     let child = RevisePlanUseCase {
         store: Arc::clone(&store),
