@@ -24,7 +24,9 @@ const ja = {
 };
 
 function App() {
-  const [source, setSource] = useState(""); const [target, setTarget] = useState(""); const [database, setDatabase] = useState("music-folder.db");
+  const [source, setSource] = useState(() => localStorage.getItem("mfb.source") ?? "");
+  const [target, setTarget] = useState(() => localStorage.getItem("mfb.target") ?? "");
+  const [database, setDatabase] = useState(() => localStorage.getItem("mfb.database") ?? "music-folder.db");
   const [scan, setScan] = useState<Scan>(); const [scanRequest, setScanRequest] = useState<ScanStatus>(); const [progress, setProgress] = useState<Progress>();
   const [plan, setPlan] = useState<Workflow>(); const [execution, setExecution] = useState<Workflow>(); const [executionId, setExecutionId] = useState<string>();
   const [history, setHistory] = useState<History[]>([]); const [items, setItems] = useState<PlanItem[]>([]); const [logs, setLogs] = useState<Log[]>([]); const [metrics, setMetrics] = useState<Metric[]>([]);
@@ -35,6 +37,9 @@ function App() {
   const logVirtualizer = useVirtualizer({ count: logs.length, getScrollElement: () => logRef.current, estimateSize: () => 48, overscan: 8 });
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
+  useEffect(() => { localStorage.setItem("mfb.source", source); }, [source]);
+  useEffect(() => { localStorage.setItem("mfb.target", target); }, [target]);
+  useEffect(() => { localStorage.setItem("mfb.database", database); }, [database]);
   useEffect(() => { let offProgress: (() => void) | undefined; let offFinished: (() => void) | undefined;
     void listen<Progress>("scan-progress", event => setProgress(event.payload)).then(off => offProgress = off);
     void listen<ScanStatus>("scan-finished", event => { const value = event.payload; setScanRequest(value); setBusy(false); setProgress(undefined); if (value.status === "completed" && value.scan_id) setScan({ scan_id: value.scan_id, files: value.files, cache_hits: value.cache_hits, warnings: value.warnings }); if (value.error) setError(value.error); }).then(off => offFinished = off);
