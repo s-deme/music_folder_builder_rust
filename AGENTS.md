@@ -24,3 +24,8 @@ Windows 向け音楽ライブラリ整理ツールの後継。既存 Python プ�
 - 実装時は `make validate` を実行する。ホストに `make` がない場合は README 記載の等価な Docker Compose コマンドを実行する。いずれも Docker 内で `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、UI typecheck、UI production build を実行する。
 - Windows 固有の統合テストを CI の Windows runner で実行する。
 - 報告時は「今回ローカルで実行できなかった」と「プロジェクトが未検証」を区別し、GitHub Actions の既存成功結果がある場合はその範囲を明記する。
+
+## Git workflow
+
+- 利用者が単に「push」と指示した場合、PR は作成せず、`main` へ直接コミットして push する。
+- PR は利用者が明示的に要求した場合だけ作成する。
