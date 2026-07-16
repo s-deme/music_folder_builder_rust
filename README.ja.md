@@ -20,7 +20,7 @@ make validate
 ホストに `make` がない場合は、同じ検証を次で実行する。
 
 ```powershell
-docker compose run --rm dev bash -c "npm --prefix ui ci && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build"
+docker compose run --rm dev bash -c "npm --prefix ui ci && npm --prefix ui audit --audit-level=moderate && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check && npm --prefix ui run build"
 ```
 
 LinuxコンテナではCore/CLI/Desktop/UIを検証する。GitHub ActionsのWindows runnerはWindows固有試験の後にTauri bundleを作成し、artifactとして保存する。
@@ -28,6 +28,8 @@ LinuxコンテナではCore/CLI/Desktop/UIを検証する。GitHub ActionsのWin
 ## 現在の実装範囲
 
 CLIとDesktopは同じRust Coreを使い、`scan -> plan -> dry-run/apply -> verify -> rollback`を実装済み。apply/rollbackは直列で、永続化済みplan/operation logのみを根拠にする。Desktop scanは非同期開始・状態照会・取消、100ms進捗通知、速度・ETA表示に対応する。
+
+要件、設計、実装タスク、主な検証の対応は [`storage/design/traceability.ja.md`](storage/design/traceability.ja.md) を参照する。実装済み範囲と残作業は [`IMPLEMENTATION_STATUS.ja.md`](IMPLEMENTATION_STATUS.ja.md) にまとめる。
 
 性能測定例：
 

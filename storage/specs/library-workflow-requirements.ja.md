@@ -110,6 +110,6 @@ WHEN 同じ scan から派生した run が存在する場合、THEN システ�
 
 WHEN 利用者が履歴行を選択する場合、THEN システム SHALL 一覧とは別の詳細領域に完全な ID、親 run、集計、日時、および「この実行を開く」操作を表示し、削除を主操作として表示してはならない。
 
-### REQ-UI-004: Desktop rollback
+### REQ-UI-005: Desktop rollback
 
 WHEN 利用者が Desktop から rollback を実行する場合、THEN UI SHALL dry-run と本実行を別の操作として示し、本実行には execution ID、対象件数、不可逆な削除を含む確認操作を要求する。
