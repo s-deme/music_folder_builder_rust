@@ -406,6 +406,14 @@ fn list_plan_items(
     store(&database)?.list_plan_items(&plan_id, cursor, limit, query.as_deref(), risk.as_deref())
 }
 #[tauri::command]
+fn get_plan_conflict_detail(
+    database: String,
+    plan_id: String,
+    conflict_group_id: String,
+) -> Result<music_folder_infra::sqlite::PlanConflictDetail, String> {
+    store(&database)?.get_plan_conflict_detail(&plan_id, &conflict_group_id)
+}
+#[tauri::command]
 fn list_operation_logs(
     database: String,
     execution_id: String,
@@ -448,6 +456,7 @@ fn main() {
             list_history,
             get_run_detail,
             list_plan_items,
+            get_plan_conflict_detail,
             list_operation_logs,
             list_metrics
         ])

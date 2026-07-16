@@ -43,12 +43,28 @@ pub struct RunDetailRow {
 #[derive(Debug, serde::Serialize)]
 pub struct PlanItemRow {
     pub id: String,
+    pub conflict_group_id: Option<String>,
+    pub conflict_member_count: u64,
     pub ordinal: u64,
     pub source_path: String,
     pub target_path: Option<String>,
     pub action: String,
     pub risk: String,
     pub reason: Option<String>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct PlanConflictMemberRow {
+    pub item_id: String,
+    pub ordinal: u64,
+    pub source_path: String,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct PlanConflictDetail {
+    pub id: String,
+    pub kind: String,
+    pub target_path: String,
+    pub existing_target_path: Option<String>,
+    pub members: Vec<PlanConflictMemberRow>,
 }
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PlanItemCounts {
@@ -108,6 +124,8 @@ impl SqliteScanStore {
           CREATE TABLE IF NOT EXISTS scan_warnings (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id), warning TEXT NOT NULL, created_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS plan_runs (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id), parent_plan_id TEXT, target_root TEXT NOT NULL, rules_json TEXT, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, conflict_count INTEGER NOT NULL DEFAULT 0, risk_count INTEGER NOT NULL DEFAULT 0, snapshot_hash TEXT);
           CREATE TABLE IF NOT EXISTS plan_items (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), ordinal INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, target_origin TEXT NOT NULL DEFAULT 'rule', action TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT);
+          CREATE TABLE IF NOT EXISTS plan_conflict_groups (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id) ON DELETE CASCADE, kind TEXT NOT NULL, normalized_target_path TEXT NOT NULL, target_path TEXT NOT NULL, existing_target_path TEXT);
+          CREATE TABLE IF NOT EXISTS plan_conflict_members (conflict_group_id TEXT NOT NULL REFERENCES plan_conflict_groups(id) ON DELETE CASCADE, plan_item_id TEXT NOT NULL REFERENCES plan_items(id) ON DELETE CASCADE, PRIMARY KEY(conflict_group_id,plan_item_id));
           CREATE TABLE IF NOT EXISTS execution_runs (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), mode TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, success_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS operation_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), plan_item_id TEXT NOT NULL REFERENCES plan_items(id), sequence_no INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, action TEXT NOT NULL, result TEXT NOT NULL, error TEXT, source_deleted INTEGER NOT NULL, expected_size INTEGER, created_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS verify_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), operation_id TEXT NOT NULL REFERENCES operation_logs(id), result TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL);
@@ -117,6 +135,7 @@ impl SqliteScanStore {
           CREATE TABLE IF NOT EXISTS run_metrics (run_id TEXT NOT NULL, phase TEXT NOT NULL, elapsed_ms INTEGER NOT NULL, item_count INTEGER NOT NULL DEFAULT 0);
           CREATE INDEX IF NOT EXISTS idx_scan_items_scan ON scan_items(scan_id);
           CREATE INDEX IF NOT EXISTS idx_plan_items_plan ON plan_items(plan_id, ordinal);
+          CREATE INDEX IF NOT EXISTS idx_plan_conflict_groups_plan_target ON plan_conflict_groups(plan_id, normalized_target_path);
           CREATE INDEX IF NOT EXISTS idx_operation_logs_execution ON operation_logs(execution_id, sequence_no);") .map_err(|e| e.to_string())?;
         connection
             .execute(
@@ -178,6 +197,7 @@ impl SqliteScanStore {
                 "target_origin",
                 "TEXT NOT NULL DEFAULT 'rule'",
             ),
+            ("plan_items", "conflict_group_id", "TEXT"),
         ] {
             let exists = connection
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -199,6 +219,12 @@ impl SqliteScanStore {
         connection
             .execute(
                 "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?1)",
+                params![now()],
+            )
+            .map_err(|e| e.to_string())?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(3,?1)",
                 params![now()],
             )
             .map_err(|e| e.to_string())?;
@@ -372,19 +398,21 @@ impl SqliteScanStore {
                 },
             )
             .map_err(|error| error.to_string())?;
-        let mut stmt = conn.prepare("SELECT id,ordinal,source_path,target_path,action,risk,reason FROM plan_items WHERE plan_id=?1 AND ordinal>?2 AND (?3='' OR source_path LIKE '%' || ?3 || '%' OR target_path LIKE '%' || ?3 || '%') AND (?4='' OR risk=?4) ORDER BY ordinal ASC LIMIT ?5").map_err(|e|e.to_string())?;
+        let mut stmt = conn.prepare("SELECT i.id,i.conflict_group_id,(SELECT COUNT(*) FROM plan_conflict_members m WHERE m.conflict_group_id=i.conflict_group_id),i.ordinal,i.source_path,i.target_path,i.action,i.risk,i.reason FROM plan_items i WHERE i.plan_id=?1 AND i.ordinal>?2 AND (?3='' OR i.source_path LIKE '%' || ?3 || '%' OR i.target_path LIKE '%' || ?3 || '%') AND (?4='' OR i.risk=?4) ORDER BY i.ordinal ASC LIMIT ?5").map_err(|e|e.to_string())?;
         let mut rows = stmt
             .query_map(
                 params![plan_id, after, needle, wanted_risk, (page_size + 1) as i64],
                 |r| {
                     Ok(PlanItemRow {
                         id: r.get(0)?,
-                        ordinal: r.get::<_, i64>(1)? as u64,
-                        source_path: r.get(2)?,
-                        target_path: r.get(3)?,
-                        action: r.get(4)?,
-                        risk: r.get(5)?,
-                        reason: r.get(6)?,
+                        conflict_group_id: r.get(1)?,
+                        conflict_member_count: r.get::<_, i64>(2)? as u64,
+                        ordinal: r.get::<_, i64>(3)? as u64,
+                        source_path: r.get(4)?,
+                        target_path: r.get(5)?,
+                        action: r.get(6)?,
+                        risk: r.get(7)?,
+                        reason: r.get(8)?,
                     })
                 },
             )
@@ -400,6 +428,46 @@ impl SqliteScanStore {
             filtered_total,
             next_cursor,
             counts,
+        })
+    }
+    pub fn get_plan_conflict_detail(
+        &self,
+        plan_id: &str,
+        conflict_group_id: &str,
+    ) -> Result<PlanConflictDetail, String> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let (id, kind, target_path, existing_target_path) = conn
+            .query_row(
+                "SELECT id,kind,target_path,existing_target_path FROM plan_conflict_groups WHERE id=?1 AND plan_id=?2",
+                params![conflict_group_id, plan_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "plan_conflict_not_found".to_string())?;
+        let mut statement = conn
+            .prepare("SELECT i.id,i.ordinal,i.source_path FROM plan_conflict_members m JOIN plan_items i ON i.id=m.plan_item_id WHERE m.conflict_group_id=?1 ORDER BY i.ordinal,i.id")
+            .map_err(|error| error.to_string())?;
+        let members = statement
+            .query_map(params![conflict_group_id], |row| {
+                Ok(PlanConflictMemberRow {
+                    item_id: row.get(0)?,
+                    ordinal: row.get::<_, i64>(1)? as u64,
+                    source_path: row.get(2)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(PlanConflictDetail {
+            id,
+            kind,
+            target_path,
+            existing_target_path,
+            members,
         })
     }
     pub fn list_operation_logs(
@@ -764,7 +832,16 @@ impl PlanStore for SqliteScanStore {
             .map_err(|_| "database mutex poisoned".to_string())?;
         let tx = conn.transaction().map_err(|error| error.to_string())?;
         for item in items {
-            tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![item.id.to_string(),plan_id,item.ordinal as i64,item.file.path.to_string_lossy(),item.target.as_ref().map(|value| value.to_string_lossy().into_owned()),plan_action_name(item.action),risk_name(item.risk),item.reason]).map_err(|error| error.to_string())?;
+            let group_id = item.conflict_group_id.map(|value| value.to_string());
+            let target = item
+                .target
+                .as_ref()
+                .map(|value| value.to_string_lossy().into_owned());
+            tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,conflict_group_id,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![item.id.to_string(),plan_id,item.ordinal as i64,item.file.path.to_string_lossy(),target,group_id,plan_action_name(item.action),risk_name(item.risk),item.reason]).map_err(|error| error.to_string())?;
+            if let (Some(group_id), Some(target)) = (&group_id, &target) {
+                tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'plan_items',?3,?4)", params![group_id,plan_id,target.to_lowercase(),target]).map_err(|error| error.to_string())?;
+                tx.execute("INSERT INTO plan_conflict_members(conflict_group_id,plan_item_id) VALUES(?1,?2)", params![group_id,item.id.to_string()]).map_err(|error| error.to_string())?;
+            }
         }
         tx.commit().map_err(|error| error.to_string())
     }
@@ -833,10 +910,7 @@ impl PlanRevisionStore for SqliteScanStore {
         let id = Uuid::new_v4().to_string();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO plan_runs(id,scan_id,parent_plan_id,target_root,rules_json,status,started_at) SELECT ?1,scan_id,id,target_root,rules_json,'running',?2 FROM plan_runs WHERE id=?3", params![id,now(),parent_plan_id]).map_err(|e|e.to_string())?;
-        let mut digest = Sha256::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut conflicts = 0u64;
-        let mut risks = 0u64;
+        let mut revised = Vec::with_capacity(rows.len());
         for (old_id, ordinal, source_path, old_target, mut action, mut risk, mut reason) in rows {
             let (target, origin) = if let Some(change) = overrides.get(old_id.as_str()) {
                 let target = change.target.to_string_lossy().into_owned();
@@ -844,28 +918,68 @@ impl PlanRevisionStore for SqliteScanStore {
                     action = "skip".into();
                     risk = "invalid_target".into();
                     reason = Some(change.reason.clone());
-                    (Some(target), "manual")
                 } else {
-                    (Some(target), "manual")
+                    action = "move".into();
+                    risk = "none".into();
+                    reason = Some(change.reason.clone());
                 }
+                (Some(target), "manual")
             } else {
+                if risk == "conflict" && reason.as_deref() == Some("target_conflict") {
+                    action = "move".into();
+                    risk = "none".into();
+                    reason = None;
+                }
                 (old_target, "rule")
             };
+            revised.push((
+                Uuid::new_v4().to_string(),
+                ordinal,
+                source_path,
+                target,
+                origin,
+                action,
+                risk,
+                reason,
+            ));
+        }
+        let mut target_counts = std::collections::HashMap::<String, usize>::new();
+        for (_, _, _, target, _, action, _, _) in &revised {
             if action == "move" {
-                if let Some(target) = &target {
-                    if !seen.insert(target.to_lowercase()) {
-                        action = "skip".into();
-                        risk = "conflict".into();
-                        reason = Some("target_conflict".into());
-                        conflicts += 1;
-                    }
+                if let Some(target) = target {
+                    *target_counts.entry(target.to_lowercase()).or_default() += 1;
                 }
+            }
+        }
+        let conflict_groups: std::collections::HashMap<String, String> = target_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(target, _)| (target, Uuid::new_v4().to_string()))
+            .collect();
+        let mut digest = Sha256::new();
+        let mut conflicts = 0u64;
+        let mut risks = 0u64;
+        for (new_item, ordinal, source_path, target, origin, mut action, mut risk, mut reason) in
+            revised
+        {
+            let conflict_group_id = target
+                .as_ref()
+                .and_then(|target| conflict_groups.get(&target.to_lowercase()))
+                .cloned();
+            if conflict_group_id.is_some() {
+                action = "skip".into();
+                risk = "conflict".into();
+                reason = Some("target_conflict".into());
+                conflicts += 1;
             }
             if risk != "none" {
                 risks += 1;
             }
-            let new_item = Uuid::new_v4().to_string();
-            tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,target_origin,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![new_item,id,ordinal,source_path,target,origin,action,risk,reason]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,target_origin,conflict_group_id,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![new_item,id,ordinal,source_path,target,origin,conflict_group_id,action,risk,reason]).map_err(|e|e.to_string())?;
+            if let (Some(group_id), Some(target)) = (&conflict_group_id, &target) {
+                tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'plan_items',?3,?4)", params![group_id,id,target.to_lowercase(),target]).map_err(|e|e.to_string())?;
+                tx.execute("INSERT INTO plan_conflict_members(conflict_group_id,plan_item_id) VALUES(?1,?2)", params![group_id,new_item]).map_err(|e|e.to_string())?;
+            }
             digest.update((ordinal as u64).to_le_bytes());
             digest.update(source_path.as_bytes());
             digest.update([0]);

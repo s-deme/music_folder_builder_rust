@@ -10,7 +10,8 @@
 | metadata_cache | file_id, fingerprint, reader_version, tag_json, status, error | 差分タグ再利用 |
 | scan_items | scan_run_id, file_id, disposition, warning | 音楽・asset を含む scan snapshot |
 | plan_runs | id, scan_run_id, parent_plan_id, rules_json, rules_version, snapshot_hash, status | immutable plan 親 |
-| plan_items | id, plan_run_id, file_id, ordinal, action, source_path, target_path, conflict, risk, reason, target_origin | apply 入力 |
+| plan_items | id, plan_run_id, file_id, ordinal, action, source_path, target_path, conflict_group_id, risk, reason, target_origin | apply 入力 |
+| plan_conflict_groups / plan_conflict_members | id, plan_run_id, kind, normalized_target_path / conflict_group_id, plan_item_id | 同一Plan内で同一targetになる全itemの診断証跡 |
 | execution_runs | id, plan_run_id, mode, status, counters | dry-run/apply |
 | operation_logs | id, execution_run_id, plan_item_id, sequence_no, action, result, source_deleted, error | apply 監査 |
 | verify_runs / verify_logs | id, subject_run_id, status / item result | 検証監査 |
@@ -18,6 +19,6 @@
 | run_metrics | run_id, phase, elapsed_ms, item_count, bytes | phase 計測 |
 | event_logs | run_id, level, event, payload_json, created_at | UI/診断ログ |
 
-主要 index は `library_files(canonical_path)` unique、`scan_items(scan_run_id,file_id)`、`plan_items(plan_run_id,ordinal)`、`operation_logs(execution_run_id,sequence_no)`、各 run 外部キーと status。path は Windows canonical/display の両方を必要に応じ保存し、日時は UTC、サイズは INTEGER、JSON は監査用 payload としてのみ使う。
+主要 index は `library_files(canonical_path)` unique、`scan_items(scan_run_id,file_id)`、`plan_items(plan_run_id,ordinal)`、`plan_conflict_groups(plan_run_id,normalized_target_path)`、`plan_conflict_members(conflict_group_id,plan_item_id)`、`operation_logs(execution_run_id,sequence_no)`、各 run 外部キーと status。path は Windows canonical/display の両方を必要に応じ保存し、日時は UTC、サイズは INTEGER、JSON は監査用 payload としてのみ使う。
 
 plan revision は `parent_plan_id` を持つ新しい `plan_runs` と、再評価済みの全 `plan_items` を同一 transaction で保存する。`target_origin` は `rule` または `manual`、手動指定の理由は event_logs payload に保存する。履歴削除は run の依存グラフを子から親へ削除する transaction とし、running status を事前に拒否する。plan itemは targetを再計算せず、後続applyの唯一の入力になる。

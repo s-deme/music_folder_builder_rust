@@ -359,6 +359,7 @@ pub fn render_template(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanItem {
     pub id: Uuid,
+    pub conflict_group_id: Option<Uuid>,
     pub ordinal: u64,
     pub file: ScannedFile,
     pub target: Option<PathBuf>,

@@ -36,6 +36,12 @@ IF canonical path、size、mtime（必要に応じ file identity）が既読値�
 
 WHEN plan が target path を生成する場合、THEN システム SHALL Unicode を保持し、禁止文字、末尾空白/ピリオド、予約名、component/path 長を判定し、変換と risk 理由を保存する。
 
+WHEN target path または component の長さを判定する場合、THEN システム SHALL 設定された上限以下（上限と同数を含む）を許可し、上限を超えた場合だけ path risk とする。
+
+IF target path または component が長さ上限を超えた場合、THEN システム SHALL 対象の種別、実際の文字数、および上限文字数を Plan の理由と命名 preview に日本語で表示し、内部の理由codeを利用者向け表示へ露出しない。
+
+WHEN Plan の理由または命名 preview の検証理由を利用者へ表示する場合、THEN システム SHALL すべての内部理由codeを意味の分かる日本語へ変換し、未対応codeも内部文字列をそのまま表示せず日本語のfallbackと補助情報で示す。
+
 ### REQ-PLN-002: 命名規則
 
 WHEN 利用者が plan を作成する場合、THEN システム SHALL artist、album、disc、filename のテンプレートを用いて target を生成し、`artist`、`album_artist`、`album`、`title`、`track_no`、`disc_no`、`year`、`extension`、`source_stem` を参照可能にする。テンプレートは数値書式と、値がない場合に全体を省略する条件ブロックを提供する。
@@ -48,6 +54,10 @@ WHEN 命名規則が変更された場合、THEN システム SHALL 構文、未
 
 IF 複数 item が同一 target となる場合、THEN システム SHALL 設定済みの duplicate suffix template により決定的かつ一意な target を生成する。suffix で解決できない衝突は skip として保存し、既存 target を上書きしてはならない。
 
+IF item が重複 target または既存 target との衝突により skip となる場合、THEN システム SHALL 衝突種別、共通の target path、および同じPlan内で衝突する全 item の source path と item ID、または衝突する既存 target pathを、当該Planの診断情報として保存する。
+
+WHEN 利用者が衝突 item を確認する場合、THEN システム SHALL「どのsourceとどのsourceが同じtargetになるか」または「どのsourceとどの既存targetが衝突するか」を同じ画面で識別可能に表示し、衝突相手を検索や目視で推測することを要求してはならない。
+
 WHEN 利用者が重複処理を設定する場合、THEN システム SHALL `skip`、安定した`sequence`、templateによるsuffixを明示的に選択可能にし、選択結果をrules snapshotへ保存する。
 
 ### REQ-PLN-004: 手動 target 指定
@@ -57,6 +67,14 @@ WHEN 利用者が plan item の target を指定する場合、THEN システム
 ### REQ-MDA-001: album artist
 
 WHEN 音声 metadata を読む場合、THEN システム SHALL 対応形式の album artist を取得し、取得不能時だけ artist へのフォールバックを許可する。
+
+### REQ-MDA-002: metadata 不足時の移動
+
+WHEN metadata が読み取れない、または artist/album が不足した音楽 item を plan する場合、THEN システム SHALL 既定で source root からの相対pathと元ファイル名を保持して target root 配下への move を作成し、`metadata_missing` risk と不足理由を保存する。
+
+WHEN 利用者が metadata 不足時の処理を設定する場合、THEN システム SHALL「元のフォルダ構成で移動」「metadata不足専用フォルダへ移動」「skip」を選択可能にし、選択値と専用フォルダ名を naming rules snapshot へ保存する。既定値は「元のフォルダ構成で移動」とする。
+
+IF metadata 不足時に生成した target が source root 外の相対path、既存target、重複target、sourceと同一、またはWindows path policy違反となる場合、THEN システム SHALL 当該itemをskipして理由を保存し、既存targetを上書きしてはならない。
 
 ### REQ-AST-001: 同梱画像
 

@@ -290,6 +290,80 @@ fn plan_moves_companion_image_to_music_target_directory() {
 }
 
 #[test]
+fn conflict_detail_lists_every_source_and_revision_rechecks_the_group() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("one.mp3")).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("two.mp3")).unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let naming = music_folder_core::NamingRules {
+        duplicate_strategy: music_folder_core::DuplicateStrategy::Skip,
+        ..Default::default()
+    };
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target.clone(),
+            batch_size: 1,
+            naming,
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.conflicts, 2);
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 1, None, Some("conflict"))
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].conflict_member_count, 2);
+    let group_id = page.items[0].conflict_group_id.as_deref().unwrap();
+    let detail = store
+        .get_plan_conflict_detail(&plan.plan_id, group_id)
+        .unwrap();
+    assert_eq!(detail.kind, "plan_items");
+    assert_eq!(detail.members.len(), 2);
+    assert!(detail
+        .members
+        .iter()
+        .any(|member| member.source_path.ends_with("one.mp3")));
+    assert!(detail
+        .members
+        .iter()
+        .any(|member| member.source_path.ends_with("two.mp3")));
+
+    let changed_id = detail.members[0].item_id.clone();
+    let child = RevisePlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &plan.plan_id,
+        &[ManualTargetChange {
+            plan_item_id: changed_id,
+            target: target.join("manual.mp3"),
+            reason: "衝突を解消".into(),
+        }],
+    )
+    .unwrap();
+    let child_page = store.list_plan_items(&child, None, 10, None, None).unwrap();
+    assert!(child_page.items.iter().all(|item| item.risk != "conflict"));
+    assert!(child_page
+        .items
+        .iter()
+        .all(|item| item.conflict_group_id.is_none()));
+}
+
+#[test]
 fn manual_target_creates_immutable_child_plan() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");

@@ -709,6 +709,7 @@ fn make_plan_item(
     };
     PlanItem {
         id: Uuid::new_v4(),
+        conflict_group_id: None,
         ordinal,
         file,
         target: Some(target),
@@ -743,9 +744,8 @@ fn resolve_duplicate_targets(items: &mut [PlanItem], naming: &NamingRules) {
                     && naming.duplicate_suffix_template.is_empty()))
                 && item.file.kind != FileKind::Image
             {
-                item.action = PlanAction::Skip;
-                item.risk = Risk::Conflict;
-                item.reason = Some("target_conflict".into());
+                // Keep every candidate movable until `mark_target_conflicts` so
+                // all sides of the collision receive the same diagnostic group.
                 continue;
             }
             let suffix = if item.file.kind == FileKind::Image
@@ -811,6 +811,7 @@ mod snapshot_tests {
         };
         let mut item = PlanItem {
             id: Uuid::nil(),
+            conflict_group_id: None,
             ordinal: 1,
             file,
             target: Some(PathBuf::from("C:/out/a.mp3")),
@@ -827,6 +828,7 @@ mod snapshot_tests {
 fn skipped_plan_item(ordinal: u64, file: ScannedFile, risk: Risk, reason: &str) -> PlanItem {
     PlanItem {
         id: Uuid::new_v4(),
+        conflict_group_id: None,
         ordinal,
         file,
         target: None,
@@ -837,23 +839,24 @@ fn skipped_plan_item(ordinal: u64, file: ScannedFile, risk: Risk, reason: &str) 
 }
 
 fn mark_target_conflicts(items: &mut [PlanItem]) {
-    let mut counts = HashMap::<String, usize>::new();
+    let mut groups = HashMap::<String, (usize, Uuid)>::new();
     for item in items.iter().filter(|item| item.action == PlanAction::Move) {
         if let Some(target) = &item.target {
-            *counts
+            let entry = groups
                 .entry(target.to_string_lossy().to_lowercase())
-                .or_default() += 1;
+                .or_insert_with(|| (0, Uuid::new_v4()));
+            entry.0 += 1;
         }
     }
     for item in items.iter_mut() {
-        let conflict = item.target.as_ref().is_some_and(|target| {
-            counts
+        let group = item.target.as_ref().and_then(|target| {
+            groups
                 .get(&target.to_string_lossy().to_lowercase())
-                .copied()
-                .unwrap_or_default()
-                > 1
+                .filter(|(count, _)| *count > 1)
+                .map(|(_, id)| *id)
         });
-        if conflict {
+        if let Some(group_id) = group {
+            item.conflict_group_id = Some(group_id);
             item.action = PlanAction::Skip;
             item.risk = Risk::Conflict;
             item.reason = Some("target_conflict".into());

@@ -29,6 +29,9 @@
 - [ ] T24: Core/infra/CLI/Desktop の unit・integration test、Windows fixture/path test、`fmt`/`clippy`/workspace test と CI を更新する（T22依存）。
 - [x] T25: Plan cursor APIへ全件・絞り込み・action/risk別件数とnext cursorを追加し、repository integration testを追加する。
 - [x] T26: Desktop Plan一覧へ件数summary、件数付きfilter、読込進捗、source/target/reasonの縦型item表示を追加し、長いpathによる横scrollを解消する（T25依存）。
+- [ ] T27: Coreのpath長診断へ対象・実測文字数・上限文字数を追加する。上限以下を許可する境界test、Plan/命名preview/CLI/Desktopに現れる全理由codeの日本語変換と未知codeの日本語fallback test、内部code非表示test、および既存 `path_too_long` riskとの後方互換testを追加する（T02、T13、T18依存）。
+- [ ] T28: metadata不足時の方針をNamingRulesへserde default付きで追加し、PlanStoreからscan source rootを取得して、既定では元の相対path・ファイル名を保持したrisk付きmoveを生成する。専用directory/skip方針、root外拒否、Windows path policy、source同一、既存/重複target、旧snapshot互換のCore/SQLite/integration testを追加し、CLI/Desktopの3択設定と日本語理由表示を実装して `make validate` を実行する（T13、T16、T18、T27依存）。
+- [x] T29: suffix適用後の同一Plan内衝突を表すgroup/memberをCore・SQLiteへ追加し、Plan作成・改訂時に全相手を永続化する。Plan pageへgroup概要、detail APIへ共通targetと全source/item IDを追加し、Desktopで「衝突相手を表示」・item番号・path copyを実装する。2件以上の衝突、未読込page上の相手、改訂による解消、snapshot整合性を試験する（T14、T16、T18、T25依存）。
 
 ## 外部受入確認
 
