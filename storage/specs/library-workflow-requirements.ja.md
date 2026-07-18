@@ -34,11 +34,11 @@ IF canonical path、size、mtime（必要に応じ file identity）が既読値�
 
 ### REQ-PLN-001: Windows path policy
 
-WHEN plan が target path を生成する場合、THEN システム SHALL Unicode を保持し、禁止文字、末尾空白/ピリオド、予約名、component/path 長を判定し、変換と risk 理由を保存する。
+WHEN plan が target path を生成する場合、THEN システム SHALL Unicode を保持し、禁止文字、末尾空白/ピリオド、予約名、およびpath全体の長さを判定し、変換と risk 理由を保存する。
 
-WHEN target path または component の長さを判定する場合、THEN システム SHALL 設定された上限以下（上限と同数を含む）を許可し、上限を超えた場合だけ path risk とする。
+WHEN target path の長さを判定する場合、THEN システム SHALL path全体が設定された上限以下（上限と同数を含む）なら各componentの文字数にかかわらず許可し、path全体の上限を超えた場合だけ path risk とする。
 
-IF target path または component が長さ上限を超えた場合、THEN システム SHALL 対象の種別、実際の文字数、および上限文字数を Plan の理由と命名 preview に日本語で表示し、内部の理由codeを利用者向け表示へ露出しない。
+IF target path が長さ上限を超えた場合、THEN システム SHALL 実際の文字数と上限文字数を Plan の理由と命名 preview に日本語で表示し、内部の理由codeを利用者向け表示へ露出しない。
 
 WHEN Plan の理由または命名 preview の検証理由を利用者へ表示する場合、THEN システム SHALL すべての内部理由codeを意味の分かる日本語へ変換し、未対応codeも内部文字列をそのまま表示せず日本語のfallbackと補助情報で示す。
 
@@ -70,15 +70,19 @@ WHEN 音声 metadata を読む場合、THEN システム SHALL 対応形式の a
 
 ### REQ-MDA-002: metadata 不足時の移動
 
-WHEN metadata が読み取れない、または artist/album が不足した音楽 item を plan する場合、THEN システム SHALL 既定で source root からの相対pathと元ファイル名を保持して target root 配下への move を作成し、`metadata_missing` risk と不足理由を保存する。
+WHEN artistまたはalbumが不足した音楽itemをplanする場合、THEN システム SHALL 不足するartistを `UnknownArtist`、不足するalbumを `Unknown_Album` で補完して通常の命名規則からtargetを生成し、`metadata_missing` riskと不足理由を保存する。
 
-WHEN 利用者が metadata 不足時の処理を設定する場合、THEN システム SHALL「元のフォルダ構成で移動」「metadata不足専用フォルダへ移動」「skip」を選択可能にし、選択値と専用フォルダ名を naming rules snapshot へ保存する。既定値は「元のフォルダ構成で移動」とする。
+WHEN metadata全体を読み取れない音楽itemをplanする場合、THEN システム SHALL artistを `UnknownArtist`、albumを `Unknown_Album` で補完し、元ファイル名を保持してtargetを生成し、`metadata_missing` riskと理由を保存する。
 
-IF metadata 不足時に生成した target が source root 外の相対path、既存target、重複target、sourceと同一、またはWindows path policy違反となる場合、THEN システム SHALL 当該itemをskipして理由を保存し、既存targetを上書きしてはならない。
+IF metadata不足時に生成したtargetが既存target、重複target、sourceと同一、またはWindows path policy違反となる場合、THEN システム SHALL 当該itemをskipして理由を保存し、既存targetを上書きしてはならない。
 
 ### REQ-AST-001: 同梱画像
 
 WHEN scan が音楽ファイルと同じ source tree 内の対応画像を検出した場合、THEN システム SHALL 画像を scan snapshot に保存し、plan で対応する音楽の target directory へ移動予定を作成する。対応先がない、または一意に決定できない画像は skip と理由を記録する。
+
+IF 画像の移動先候補が複数ある場合、THEN システム SHALL 候補となる全target directoryと根拠となる音楽itemをPlan診断として保存し、移動先を空欄ではなく「未決定（候補N件）」と表示して候補を確認可能にする。
+
+WHEN 利用者が画像の移動先候補を選択する場合、THEN システム SHALL 元Planを変更せず、選択したdirectoryと画像ファイル名からtargetを作るimmutableな改訂Planを生成し、通常のpath policyと衝突検査を適用する。
 
 ### REQ-AST-002: 画像名
 

@@ -7,7 +7,7 @@ use crate::{
         PlanStore, RollbackStore, ScanStore, VerifyStore,
     },
     render_template, sanitize_component, DuplicateStrategy, FileKind, NamingRules, OperationLog,
-    PlanAction, PlanItem, Risk, ScannedFile,
+    PlanAction, PlanConflictCandidate, PlanItem, Risk, ScannedFile, TrackMetadata,
 };
 use crossbeam_channel::{bounded, Receiver};
 use sha2::{Digest, Sha256};
@@ -499,7 +499,7 @@ impl<S: PlanStore> PlanUseCase<S> {
         let plan_id = self
             .store
             .begin_plan(scan_id, &options.target_root, &options.naming)?;
-        let mut music_targets = HashMap::<PathBuf, Vec<PathBuf>>::new();
+        let mut music_targets = HashMap::<PathBuf, Vec<(PathBuf, Uuid)>>::new();
         let mut items: Vec<PlanItem> = files
             .into_iter()
             .enumerate()
@@ -529,7 +529,7 @@ impl<S: PlanStore> PlanUseCase<S> {
                             music_targets
                                 .entry(directory.to_path_buf())
                                 .or_default()
-                                .push(target_parent.clone());
+                                .push((target_parent.clone(), item.id));
                             source = directory.parent();
                         }
                     }
@@ -542,19 +542,33 @@ impl<S: PlanStore> PlanUseCase<S> {
             .filter(|item| item.file.kind == FileKind::Image)
         {
             let mut source = item.file.path.parent();
-            let mut candidates = Vec::new();
+            let mut candidate_items = Vec::new();
             while let Some(directory) = source {
                 if let Some(values) = music_targets.get(directory) {
-                    candidates.extend(values.clone());
+                    candidate_items.extend(values.clone());
                     break;
                 }
                 source = directory.parent();
             }
-            candidates.sort();
-            candidates.dedup();
+            candidate_items.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+            candidate_items.dedup();
+            let mut candidates = Vec::<PlanConflictCandidate>::new();
+            for (target_directory, music_item_id) in candidate_items {
+                if let Some(candidate) = candidates
+                    .iter_mut()
+                    .find(|candidate| candidate.target_directory == target_directory)
+                {
+                    candidate.music_item_ids.push(music_item_id);
+                } else {
+                    candidates.push(PlanConflictCandidate {
+                        target_directory,
+                        music_item_ids: vec![music_item_id],
+                    });
+                }
+            }
             match candidates.as_slice() {
-                [parent] => {
-                    let parent = parent.clone();
+                [candidate] => {
+                    let parent = candidate.target_directory.clone();
                     let name = item
                         .file
                         .path
@@ -571,6 +585,8 @@ impl<S: PlanStore> PlanUseCase<S> {
                     item.reason = Some("companion_without_music".into());
                 }
                 _ => {
+                    item.conflict_group_id = Some(Uuid::new_v4());
+                    item.conflict_candidates = candidates;
                     item.risk = Risk::Conflict;
                     item.reason = Some("companion_target_ambiguous".into());
                 }
@@ -633,6 +649,12 @@ pub fn plan_snapshot_hash(items: &[PlanItem]) -> String {
         if let Some(reason) = &item.reason {
             digest.update(reason.as_bytes());
         }
+        for candidate in &item.conflict_candidates {
+            digest.update(candidate.target_directory.to_string_lossy().as_bytes());
+            for member in &candidate.music_item_ids {
+                digest.update(member.as_bytes());
+            }
+        }
         digest.update([0xff]);
     }
     format!("{:x}", digest.finalize())
@@ -644,20 +666,40 @@ fn make_plan_item(
     target_root: &Path,
     naming: &NamingRules,
 ) -> PlanItem {
-    let Some(metadata) = &file.metadata else {
-        return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "metadata_missing");
-    };
-    if metadata
+    let metadata_unreadable = file.metadata.is_none();
+    let mut metadata = file.metadata.clone().unwrap_or(TrackMetadata {
+        artist: None,
+        album_artist: None,
+        album: None,
+        title: None,
+        track_no: None,
+        disc_no: None,
+        year: None,
+    });
+    let artist_missing = metadata
         .album_artist
         .as_deref()
         .or(metadata.artist.as_deref())
-        .is_none()
-    {
-        return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "artist_missing");
+        .is_none();
+    let album_missing = metadata.album.is_none();
+    if artist_missing {
+        metadata.artist = Some("UnknownArtist".into());
+        metadata.album_artist = Some("UnknownArtist".into());
     }
-    if metadata.album.is_none() {
-        return skipped_plan_item(ordinal, file, Risk::MetadataMissing, "album_missing");
+    if album_missing {
+        metadata.album = Some("Unknown_Album".into());
     }
+    let missing_reason = if metadata_unreadable {
+        Some("metadata_missing")
+    } else if artist_missing && album_missing {
+        Some("artist_album_missing")
+    } else if artist_missing {
+        Some("artist_missing")
+    } else if album_missing {
+        Some("album_missing")
+    } else {
+        None
+    };
     let source_stem = file
         .path
         .file_stem()
@@ -669,31 +711,41 @@ fn make_plan_item(
         .and_then(|value| value.to_str())
         .map(|v| format!(".{v}"))
         .unwrap_or_default();
-    let filename = if naming.use_source_filename {
+    let filename = if naming.use_source_filename || metadata_unreadable {
         file.path
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("_")
             .into()
     } else {
-        render_template(&naming.filename_template, metadata, source_stem, &extension)
+        render_template(
+            &naming.filename_template,
+            &metadata,
+            source_stem,
+            &extension,
+        )
     };
     let target = target_root
         .join(sanitize_component(&render_template(
             &naming.artist_dir_template,
-            metadata,
+            &metadata,
             source_stem,
             &extension,
         )))
         .join(sanitize_component(&render_template(
             &naming.album_dir_template,
-            metadata,
+            &metadata,
             source_stem,
             &extension,
         )))
         .join(
-            render_template(&naming.disc_dir_template, metadata, source_stem, &extension)
-                .trim_matches([' ', '.']),
+            render_template(
+                &naming.disc_dir_template,
+                &metadata,
+                source_stem,
+                &extension,
+            )
+            .trim_matches([' ', '.']),
         )
         .join(sanitize_component(&filename));
     let (action, risk, reason) = if target == file.path {
@@ -709,7 +761,15 @@ fn make_plan_item(
             Some(error.reason_code()),
         )
     } else {
-        (PlanAction::Move, Risk::None, None)
+        (
+            PlanAction::Move,
+            if missing_reason.is_some() {
+                Risk::MetadataMissing
+            } else {
+                Risk::None
+            },
+            missing_reason.map(str::to_owned),
+        )
     };
     PlanItem {
         id: Uuid::new_v4(),
@@ -720,6 +780,7 @@ fn make_plan_item(
         action,
         risk,
         reason,
+        conflict_candidates: Vec::new(),
     }
 }
 
@@ -822,6 +883,7 @@ mod snapshot_tests {
             action: PlanAction::Move,
             risk: Risk::None,
             reason: None,
+            conflict_candidates: Vec::new(),
         };
         let before = plan_snapshot_hash(&[item.clone()]);
         item.target = Some(PathBuf::from("C:/out/b.mp3"));
@@ -839,6 +901,7 @@ fn skipped_plan_item(ordinal: u64, file: ScannedFile, risk: Risk, reason: &str) 
         action: PlanAction::Skip,
         risk,
         reason: Some(reason.into()),
+        conflict_candidates: Vec::new(),
     }
 }
 

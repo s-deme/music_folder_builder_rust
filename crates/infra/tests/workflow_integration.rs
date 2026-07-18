@@ -290,6 +290,100 @@ fn plan_moves_companion_image_to_music_target_directory() {
 }
 
 #[test]
+fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("one.mp3")).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("two.mp3")).unwrap();
+    fs::write(source.join("cover.jpg"), b"fixture image").unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let naming = music_folder_core::NamingRules {
+        artist_dir_template: "{source_stem}".into(),
+        ..Default::default()
+    };
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming,
+        },
+    )
+    .unwrap();
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
+        .unwrap();
+    let image = &page.items[0];
+    assert_eq!(image.reason.as_deref(), Some("companion_target_ambiguous"));
+    assert_eq!(image.conflict_member_count, 2);
+    assert!(image.target_path.is_none());
+    let detail = store
+        .get_plan_conflict_detail(&plan.plan_id, image.conflict_group_id.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(detail.kind, "image_destination");
+    assert_eq!(detail.candidates.len(), 2);
+    assert!(detail
+        .candidates
+        .iter()
+        .all(|candidate| candidate.members.len() == 1));
+}
+
+#[test]
+fn missing_metadata_uses_unknown_folders_and_keeps_the_source_filename() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(
+        fixture("broken/not-audio.mp3"),
+        source.join("unreadable.mp3"),
+    )
+    .unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 10, None, None)
+        .unwrap();
+    assert_eq!(page.items[0].action, "move");
+    assert_eq!(page.items[0].risk, "metadata_missing");
+    assert_eq!(page.items[0].reason.as_deref(), Some("metadata_missing"));
+    let target = page.items[0].target_path.as_deref().unwrap();
+    assert!(target.contains("UnknownArtist"));
+    assert!(target.contains("Unknown_Album"));
+    assert!(target.ends_with("unreadable.mp3"));
+}
+
+#[test]
 fn conflict_detail_lists_every_source_and_revision_rechecks_the_group() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");

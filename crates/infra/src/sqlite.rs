@@ -65,6 +65,12 @@ pub struct PlanConflictDetail {
     pub target_path: String,
     pub existing_target_path: Option<String>,
     pub members: Vec<PlanConflictMemberRow>,
+    pub candidates: Vec<PlanConflictCandidateRow>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct PlanConflictCandidateRow {
+    pub target_path: String,
+    pub members: Vec<PlanConflictMemberRow>,
 }
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PlanItemCounts {
@@ -126,6 +132,8 @@ impl SqliteScanStore {
           CREATE TABLE IF NOT EXISTS plan_items (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), ordinal INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, target_origin TEXT NOT NULL DEFAULT 'rule', action TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT);
           CREATE TABLE IF NOT EXISTS plan_conflict_groups (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id) ON DELETE CASCADE, kind TEXT NOT NULL, normalized_target_path TEXT NOT NULL, target_path TEXT NOT NULL, existing_target_path TEXT);
           CREATE TABLE IF NOT EXISTS plan_conflict_members (conflict_group_id TEXT NOT NULL REFERENCES plan_conflict_groups(id) ON DELETE CASCADE, plan_item_id TEXT NOT NULL REFERENCES plan_items(id) ON DELETE CASCADE, PRIMARY KEY(conflict_group_id,plan_item_id));
+          CREATE TABLE IF NOT EXISTS plan_conflict_candidates (conflict_group_id TEXT NOT NULL REFERENCES plan_conflict_groups(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, target_path TEXT NOT NULL, PRIMARY KEY(conflict_group_id,ordinal));
+          CREATE TABLE IF NOT EXISTS plan_conflict_candidate_members (conflict_group_id TEXT NOT NULL, candidate_ordinal INTEGER NOT NULL, plan_item_id TEXT NOT NULL, PRIMARY KEY(conflict_group_id,candidate_ordinal,plan_item_id), FOREIGN KEY(conflict_group_id,candidate_ordinal) REFERENCES plan_conflict_candidates(conflict_group_id,ordinal) ON DELETE CASCADE);
           CREATE TABLE IF NOT EXISTS execution_runs (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_runs(id), mode TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, success_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS operation_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), plan_item_id TEXT NOT NULL REFERENCES plan_items(id), sequence_no INTEGER NOT NULL, source_path TEXT NOT NULL, target_path TEXT, action TEXT NOT NULL, result TEXT NOT NULL, error TEXT, source_deleted INTEGER NOT NULL, expected_size INTEGER, created_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS verify_logs (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL REFERENCES execution_runs(id), operation_id TEXT NOT NULL REFERENCES operation_logs(id), result TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL);
@@ -398,7 +406,7 @@ impl SqliteScanStore {
                 },
             )
             .map_err(|error| error.to_string())?;
-        let mut stmt = conn.prepare("SELECT i.id,i.conflict_group_id,(SELECT COUNT(*) FROM plan_conflict_members m WHERE m.conflict_group_id=i.conflict_group_id),i.ordinal,i.source_path,i.target_path,i.action,i.risk,i.reason FROM plan_items i WHERE i.plan_id=?1 AND i.ordinal>?2 AND (?3='' OR i.source_path LIKE '%' || ?3 || '%' OR i.target_path LIKE '%' || ?3 || '%') AND (?4='' OR i.risk=?4) ORDER BY i.ordinal ASC LIMIT ?5").map_err(|e|e.to_string())?;
+        let mut stmt = conn.prepare("SELECT i.id,i.conflict_group_id,COALESCE(NULLIF((SELECT COUNT(*) FROM plan_conflict_candidates c WHERE c.conflict_group_id=i.conflict_group_id),0),(SELECT COUNT(*) FROM plan_conflict_members m WHERE m.conflict_group_id=i.conflict_group_id)),i.ordinal,i.source_path,i.target_path,i.action,i.risk,i.reason FROM plan_items i WHERE i.plan_id=?1 AND i.ordinal>?2 AND (?3='' OR i.source_path LIKE '%' || ?3 || '%' OR i.target_path LIKE '%' || ?3 || '%') AND (?4='' OR i.risk=?4) ORDER BY i.ordinal ASC LIMIT ?5").map_err(|e|e.to_string())?;
         let mut rows = stmt
             .query_map(
                 params![plan_id, after, needle, wanted_risk, (page_size + 1) as i64],
@@ -462,12 +470,44 @@ impl SqliteScanStore {
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
+        let mut candidate_statement = conn
+            .prepare("SELECT ordinal,target_path FROM plan_conflict_candidates WHERE conflict_group_id=?1 ORDER BY ordinal")
+            .map_err(|error| error.to_string())?;
+        let candidate_rows = candidate_statement
+            .query_map(params![conflict_group_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let mut candidates = Vec::with_capacity(candidate_rows.len());
+        for (ordinal, target_path) in candidate_rows {
+            let mut member_statement = conn
+                .prepare("SELECT i.id,i.ordinal,i.source_path FROM plan_conflict_candidate_members m JOIN plan_items i ON i.id=m.plan_item_id WHERE m.conflict_group_id=?1 AND m.candidate_ordinal=?2 ORDER BY i.ordinal,i.id")
+                .map_err(|error| error.to_string())?;
+            let candidate_members = member_statement
+                .query_map(params![conflict_group_id, ordinal], |row| {
+                    Ok(PlanConflictMemberRow {
+                        item_id: row.get(0)?,
+                        ordinal: row.get::<_, i64>(1)? as u64,
+                        source_path: row.get(2)?,
+                    })
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            candidates.push(PlanConflictCandidateRow {
+                target_path,
+                members: candidate_members,
+            });
+        }
         Ok(PlanConflictDetail {
             id,
             kind,
             target_path,
             existing_target_path,
             members,
+            candidates,
         })
     }
     pub fn list_operation_logs(
@@ -841,6 +881,18 @@ impl PlanStore for SqliteScanStore {
             if let (Some(group_id), Some(target)) = (&group_id, &target) {
                 tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'plan_items',?3,?4)", params![group_id,plan_id,target.to_lowercase(),target]).map_err(|error| error.to_string())?;
                 tx.execute("INSERT INTO plan_conflict_members(conflict_group_id,plan_item_id) VALUES(?1,?2)", params![group_id,item.id.to_string()]).map_err(|error| error.to_string())?;
+            } else if let Some(group_id) = &group_id {
+                if !item.conflict_candidates.is_empty() {
+                    tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'image_destination','', '')", params![group_id,plan_id]).map_err(|error| error.to_string())?;
+                    tx.execute("INSERT INTO plan_conflict_members(conflict_group_id,plan_item_id) VALUES(?1,?2)", params![group_id,item.id.to_string()]).map_err(|error| error.to_string())?;
+                    for (index, candidate) in item.conflict_candidates.iter().enumerate() {
+                        let ordinal = index as i64 + 1;
+                        tx.execute("INSERT INTO plan_conflict_candidates(conflict_group_id,ordinal,target_path) VALUES(?1,?2,?3)", params![group_id,ordinal,candidate.target_directory.to_string_lossy()]).map_err(|error| error.to_string())?;
+                        for member in &candidate.music_item_ids {
+                            tx.execute("INSERT INTO plan_conflict_candidate_members(conflict_group_id,candidate_ordinal,plan_item_id) VALUES(?1,?2,?3)", params![group_id,ordinal,member.to_string()]).map_err(|error| error.to_string())?;
+                        }
+                    }
+                }
             }
         }
         tx.commit().map_err(|error| error.to_string())

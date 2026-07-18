@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -357,6 +357,12 @@ pub fn render_template(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanConflictCandidate {
+    pub target_directory: PathBuf,
+    pub music_item_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanItem {
     pub id: Uuid,
     pub conflict_group_id: Option<Uuid>,
@@ -366,6 +372,8 @@ pub struct PlanItem {
     pub action: PlanAction,
     pub risk: Risk,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub conflict_candidates: Vec<PlanConflictCandidate>,
 }
 
 #[derive(Debug, Clone)]
@@ -408,8 +416,6 @@ pub enum DomainError {
     EmptyPath,
     #[error("パス全体が長すぎます: {actual}文字（上限{limit}文字）")]
     PathTooLong { actual: usize, limit: usize },
-    #[error("フォルダ名またはファイル名が長すぎます: {actual}文字（上限{limit}文字）")]
-    ComponentTooLong { actual: usize, limit: usize },
     #[error("a completed plan is required")]
     PlanNotApplicable,
     #[error("source and target are identical")]
@@ -422,9 +428,6 @@ impl DomainError {
             Self::EmptyPath => "empty_path".into(),
             Self::PathTooLong { actual, limit } => {
                 format!("path_too_long:{actual}:{limit}")
-            }
-            Self::ComponentTooLong { actual, limit } => {
-                format!("component_too_long:{actual}:{limit}")
             }
             Self::PlanNotApplicable => "plan_not_applicable".into(),
             Self::SamePath => "source_equals_target".into(),
@@ -466,7 +469,6 @@ pub fn sanitize_component(value: &str) -> String {
 
 pub fn assess_windows_path(path: &Path) -> Result<(), DomainError> {
     const PATH_LIMIT: usize = 240;
-    const COMPONENT_LIMIT: usize = 80;
     if path.as_os_str().is_empty() {
         return Err(DomainError::EmptyPath);
     }
@@ -476,18 +478,6 @@ pub fn assess_windows_path(path: &Path) -> Result<(), DomainError> {
             actual: path_length,
             limit: PATH_LIMIT,
         });
-    }
-    for component in path.components() {
-        if let Component::Normal(part) = component {
-            let text = part.to_string_lossy();
-            let component_length = text.chars().count();
-            if component_length > COMPONENT_LIMIT {
-                return Err(DomainError::ComponentTooLong {
-                    actual: component_length,
-                    limit: COMPONENT_LIMIT,
-                });
-            }
-        }
     }
     Ok(())
 }
@@ -517,14 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn component_length_limit_is_inclusive_and_reports_actual_and_limit() {
-        assert!(assess_windows_path(Path::new(&"a".repeat(80))).is_ok());
-        let error = assess_windows_path(Path::new(&"a".repeat(81))).unwrap_err();
-        assert_eq!(error.reason_code(), "component_too_long:81:80");
-        assert_eq!(
-            error.to_string(),
-            "フォルダ名またはファイル名が長すぎます: 81文字（上限80文字）"
-        );
+    fn component_over_80_is_allowed_when_the_whole_path_is_within_limit() {
+        assert!(assess_windows_path(Path::new(&"a".repeat(239))).is_ok());
     }
     #[test]
     fn renders_optional_numbered_template_with_album_artist_fallback() {

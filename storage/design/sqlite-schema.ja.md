@@ -12,6 +12,7 @@
 | plan_runs | id, scan_run_id, parent_plan_id, rules_json, rules_version, snapshot_hash, status | immutable plan 親 |
 | plan_items | id, plan_run_id, file_id, ordinal, action, source_path, target_path, conflict_group_id, risk, reason, target_origin | apply 入力 |
 | plan_conflict_groups / plan_conflict_members | id, plan_run_id, kind, normalized_target_path / conflict_group_id, plan_item_id | 同一Plan内で同一targetになる全itemの診断証跡 |
+| plan_conflict_candidates / plan_conflict_candidate_members | conflict_group_id, ordinal, target_path / conflict_group_id, candidate_ordinal, plan_item_id | 画像の移動先候補と根拠音楽item |
 | execution_runs | id, plan_run_id, mode, status, counters | dry-run/apply |
 | operation_logs | id, execution_run_id, plan_item_id, sequence_no, action, result, source_deleted, error | apply 監査 |
 | verify_runs / verify_logs | id, subject_run_id, status / item result | 検証監査 |
