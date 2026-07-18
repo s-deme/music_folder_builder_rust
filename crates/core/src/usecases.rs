@@ -703,7 +703,11 @@ fn make_plan_item(
             Some("source_equals_target".into()),
         )
     } else if let Err(error) = assess_windows_path(&target) {
-        (PlanAction::Skip, Risk::PathTooLong, Some(error.to_string()))
+        (
+            PlanAction::Skip,
+            Risk::PathTooLong,
+            Some(error.reason_code()),
+        )
     } else {
         (PlanAction::Move, Risk::None, None)
     };

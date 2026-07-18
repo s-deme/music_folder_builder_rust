@@ -404,12 +404,32 @@ pub struct VerifyItem {
 
 #[derive(Debug, Error)]
 pub enum DomainError {
-    #[error("target path is unsafe: {0}")]
-    UnsafePath(String),
+    #[error("パスが空です")]
+    EmptyPath,
+    #[error("パス全体が長すぎます: {actual}文字（上限{limit}文字）")]
+    PathTooLong { actual: usize, limit: usize },
+    #[error("フォルダ名またはファイル名が長すぎます: {actual}文字（上限{limit}文字）")]
+    ComponentTooLong { actual: usize, limit: usize },
     #[error("a completed plan is required")]
     PlanNotApplicable,
     #[error("source and target are identical")]
     SamePath,
+}
+
+impl DomainError {
+    pub fn reason_code(&self) -> String {
+        match self {
+            Self::EmptyPath => "empty_path".into(),
+            Self::PathTooLong { actual, limit } => {
+                format!("path_too_long:{actual}:{limit}")
+            }
+            Self::ComponentTooLong { actual, limit } => {
+                format!("component_too_long:{actual}:{limit}")
+            }
+            Self::PlanNotApplicable => "plan_not_applicable".into(),
+            Self::SamePath => "source_equals_target".into(),
+        }
+    }
 }
 
 const INVALID_WINDOWS_CHARS: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
@@ -445,17 +465,27 @@ pub fn sanitize_component(value: &str) -> String {
 }
 
 pub fn assess_windows_path(path: &Path) -> Result<(), DomainError> {
+    const PATH_LIMIT: usize = 240;
+    const COMPONENT_LIMIT: usize = 80;
     if path.as_os_str().is_empty() {
-        return Err(DomainError::UnsafePath("empty_path".into()));
+        return Err(DomainError::EmptyPath);
     }
-    if path.to_string_lossy().chars().count() > 240 {
-        return Err(DomainError::UnsafePath("path_too_long".into()));
+    let path_length = path.to_string_lossy().chars().count();
+    if path_length > PATH_LIMIT {
+        return Err(DomainError::PathTooLong {
+            actual: path_length,
+            limit: PATH_LIMIT,
+        });
     }
     for component in path.components() {
         if let Component::Normal(part) = component {
             let text = part.to_string_lossy();
-            if text.chars().count() > 80 {
-                return Err(DomainError::UnsafePath("component_too_long".into()));
+            let component_length = text.chars().count();
+            if component_length > COMPONENT_LIMIT {
+                return Err(DomainError::ComponentTooLong {
+                    actual: component_length,
+                    limit: COMPONENT_LIMIT,
+                });
             }
         }
     }
@@ -471,8 +501,30 @@ mod tests {
         assert_eq!(sanitize_component("track?"), "track_");
     }
     #[test]
-    fn detects_long_path() {
-        assert!(assess_windows_path(Path::new(&"a".repeat(241))).is_err());
+    fn path_length_limit_is_inclusive_and_reports_actual_and_limit() {
+        assert!(assess_windows_path(Path::new(&"a".repeat(80))).is_ok());
+        let path = ["a".repeat(80), "b".repeat(80), "c".repeat(78)].join("/");
+        assert_eq!(path.chars().count(), 240);
+        assert!(assess_windows_path(Path::new(&path)).is_ok());
+
+        let path = format!("{path}d");
+        let error = assess_windows_path(Path::new(&path)).unwrap_err();
+        assert_eq!(error.reason_code(), "path_too_long:241:240");
+        assert_eq!(
+            error.to_string(),
+            "パス全体が長すぎます: 241文字（上限240文字）"
+        );
+    }
+
+    #[test]
+    fn component_length_limit_is_inclusive_and_reports_actual_and_limit() {
+        assert!(assess_windows_path(Path::new(&"a".repeat(80))).is_ok());
+        let error = assess_windows_path(Path::new(&"a".repeat(81))).unwrap_err();
+        assert_eq!(error.reason_code(), "component_too_long:81:80");
+        assert_eq!(
+            error.to_string(),
+            "フォルダ名またはファイル名が長すぎます: 81文字（上限80文字）"
+        );
     }
     #[test]
     fn renders_optional_numbered_template_with_album_artist_fallback() {

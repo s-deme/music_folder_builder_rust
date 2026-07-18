@@ -914,10 +914,14 @@ impl PlanRevisionStore for SqliteScanStore {
         for (old_id, ordinal, source_path, old_target, mut action, mut risk, mut reason) in rows {
             let (target, origin) = if let Some(change) = overrides.get(old_id.as_str()) {
                 let target = change.target.to_string_lossy().into_owned();
-                if target == source_path || assess_windows_path(&change.target).is_err() {
+                if target == source_path {
                     action = "skip".into();
                     risk = "invalid_target".into();
-                    reason = Some(change.reason.clone());
+                    reason = Some("source_equals_target".into());
+                } else if let Err(error) = assess_windows_path(&change.target) {
+                    action = "skip".into();
+                    risk = "path_too_long".into();
+                    reason = Some(error.reason_code());
                 } else {
                     action = "move".into();
                     risk = "none".into();
