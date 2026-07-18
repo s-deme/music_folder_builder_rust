@@ -11,4 +11,5 @@
 - Naming preview: Coreのvalidation/previewを入力変更時に呼び、サンプルmetadataによる階層表示と構文・未知field・空component・Windows path riskをPlan前に日本語で示し、内部codeを理由本文へ露出しない。長さ超過時は対象、実測文字数、上限文字数を表示する。error時はPlan作成を無効化する。
 - Duplicate: skip、安定連番、custom suffixを明示的に選択し、custom選択時だけsuffix templateを表示する。
 - Logs/history: Tauri event を append-only ring buffer に表示し、完全履歴は SQLite cursor query で取得する。履歴は日時、種別の日本語ラベル、状態 badge、結果集計を列にした選択可能な table とし、内部 ID は短縮表示する。種別・状態・ID filter、新旧 sort、`(started_at,id)` の複合 cursor を server side で処理する。同じ scan 由来の run は workflow group として区切る。選択した run は別の detail panel に完全 ID と copy、親 run、開始・終了・所要時間、集計、「この実行を開く」を表示する。削除は detail panel の副次的かつ危険な操作とし、completed run は依存 run も含む削除予定件数を確認してから整理でき、running run は削除 UI を無効化する。空、loading、末尾到達、error の各状態を文言で示す。
+- 状態 DB は Desktop backend がユーザー別ローカルアプリデータ領域に自動配置する。workflow UI に DB path の入力欄を置かず、DB path 解決完了後に履歴読込と操作を有効化する。
 - theme: light/dark/system。色だけに依存せず dry-run/breaking action をラベルでも区別する。

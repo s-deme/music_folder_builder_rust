@@ -100,6 +100,8 @@ WHEN rollback を開始する場合、THEN システム SHALL 成功した execu
 
 WHEN run が進行・完了・中断する場合、THEN システム SHALL 状態、件数、警告、ログ、検証結果、および enumerate/tag_read/db_write/plan/apply/verify の duration を SQLite に保存する。
 
+WHEN Desktop アプリを起動する場合、THEN システム SHALL OS のユーザー別ローカルアプリデータ領域に状態 DB の親ディレクトリを作成し、固定ファイル名の SQLite DB を自動的に使用する。利用者に DB path の入力を要求してはならない。
+
 ### REQ-UI-001: 大量データ UI
 
 WHEN UI が plan または履歴一覧を表示する場合、THEN システム SHALL cursor/page API と仮想スクロールを用い、全 item を WebView へ一括送信しない。

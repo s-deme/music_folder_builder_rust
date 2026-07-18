@@ -16,6 +16,8 @@ CLI (clap) ------------------------------^              |          FS / lofty / 
 
 `core` は Scan/Plan/Apply/Verify/Rollback use case、domain model、命名テンプレート/path policy、repository/FS/metadata/progress ports を持つ。`infra` は Windows file walker、metadata reader、SQLite repositories を実装する。desktop/cli は request を組み立て、結果を表示するだけである。
 
+Desktop の状態 DB は Tauri の `app_local_data_dir` 配下の `music-folder.db` とする。Desktop backend が起動後の初回参照時に親 directory を作成して path を UI に通知し、全 Desktop command はその path を共有する。UI は DB path を設定項目として表示しない。CLI は automation・検証用途の明示的な `--db` を維持する。
+
 ## 実行状態
 
 `scan_run(completed) -> plan_run(completed) -> execution_run(dry_run|apply) -> verify_run -> rollback_run -> verify_run`。apply は `plan_item` の snapshot/hash を検証してから実行し、対象 plan の内容変更を拒否する。apply/rollback は一 worker の順序付き transaction/log flush で処理する。将来の並列 apply は directory lock と独立 target 集合を導入した scheduler に限定する。

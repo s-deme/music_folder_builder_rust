@@ -11,6 +11,7 @@
 - SQLite WAL、busy timeout、batch transaction、migration、run/log/verify/rollback/metrics履歴。
 - bounded scan pipeline、設定可能worker、metadata cache、取消時writer drain/commit、cancelled状態。
 - Desktopの非同期scan開始・状態照会・取消、100ms進捗間引き、件/秒・ETA。
+- Desktopの状態DBをユーザー別ローカルアプリデータ領域へ自動配置し、UIからDB path設定を除外。
 - plan/operation logのkeyset cursor検索・filterと、可変行高virtualizer。
 - 命名テンプレート、プリセット、重複方針、validation/preview、保存済みrules snapshot。
 - album artist読取、同梱画像asset、元ファイル名保持と決定的な重複解決。

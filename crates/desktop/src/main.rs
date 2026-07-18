@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(Default, Clone)]
 struct ScanRegistry(Arc<Mutex<HashMap<String, ScanState>>>);
@@ -49,6 +49,23 @@ struct WorkflowResponse {
     success: u64,
     skipped: u64,
     failed: u64,
+}
+#[tauri::command]
+fn desktop_database_path(app: tauri::AppHandle) -> Result<String, String> {
+    let directory = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        format!(
+            "状態DBの保存先を作成できませんでした ({}): {error}",
+            directory.display()
+        )
+    })?;
+    Ok(directory
+        .join("music-folder.db")
+        .to_string_lossy()
+        .into_owned())
 }
 #[tauri::command]
 fn scan_library(
@@ -441,6 +458,7 @@ fn main() {
     tauri::Builder::default()
         .manage(ScanRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            desktop_database_path,
             scan_library,
             start_scan,
             scan_status,
