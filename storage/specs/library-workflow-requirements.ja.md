@@ -38,6 +38,10 @@ WHEN plan が target path を生成する場合、THEN システム SHALL Unicod
 
 WHEN target path の長さを判定する場合、THEN システム SHALL path全体が設定された上限以下（上限と同数を含む）なら各componentの文字数にかかわらず許可し、path全体の上限を超えた場合だけ path risk とする。
 
+WHEN 利用者が「Windowsの長いパスを許可」を有効にした場合、THEN システム SHALL 240文字を超えるtargetもPlanのmove候補として許可し、選択値をimmutableなnaming rules snapshotへ保存する。既定値は無効とする。
+
+IF 長いパスを許可したitemのfilesystem操作がWindows環境条件またはfilesystem制約により失敗した場合、THEN システム SHALL sourceを削除せずitemをfailedとして記録し、Windowsの長いパス設定とアプリ対応を確認する日本語理由を表示する。
+
 IF target path が長さ上限を超えた場合、THEN システム SHALL 実際の文字数と上限文字数を Plan の理由と命名 preview に日本語で表示し、内部の理由codeを利用者向け表示へ露出しない。
 
 WHEN Plan の理由または命名 preview の検証理由を利用者へ表示する場合、THEN システム SHALL すべての内部理由codeを意味の分かる日本語へ変換し、未対応codeも内部文字列をそのまま表示せず日本語のfallbackと補助情報で示す。

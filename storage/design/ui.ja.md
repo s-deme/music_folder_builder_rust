@@ -8,6 +8,7 @@
 - Plan item: ordinal、action、riskをheaderに置き、source、target、reasonを日本語label付きの縦配置にする。pathは省略表示して一覧の横scrollを発生させず、title属性で全文を確認可能にする。衝突、メタデータ不足、移動先不正、画像対応、長さ超過を含むすべてのrisk/action/reason内部codeは意味の分かる日本語へ変換する。未知codeも日本語fallbackを表示し、内部codeを理由本文へそのまま露出しない。長さ超過のreasonは対象、実測文字数、上限文字数（例: `パス全体が長すぎます: 241文字（上限240文字）`）を表示する。同一Plan内の衝突itemには「衝突相手を表示」を置き、展開すると共通の移動先と自分を含む全sourceをitem番号付きで並べる。各pathは全文copy可能とし、相手が未読込pageにあってもdetail APIから取得する。既存targetとの衝突はdry-run/apply結果でsourceと既存ファイルpathを併記する。target変更は情報より弱いsecondary actionとして配置する。
 - Image destination conflict: 移動先欄を `未決定（候補N件）` とし、「移動先候補を確認」から全candidate directory、対応音楽件数、音楽item番号/source pathを表示する。各candidateに「この移動先を選択」を置き、選択時は改訂Planを作成する。
 - Naming: 標準、discなし、年付き、元ファイル名保持、customのプリセットを起点に、artist/album/disc/filenameを日本語ラベル付きフォームで編集する。field tokenは選択挿入でき、元ファイル名保持時は競合するtemplate入力を無効化する。内部JSONは通常UIへ露出しない。
+- Long path option: 命名設定に既定OFFの「Windowsの長いパスを許可」を置く。ON時は「Windows側の長いパス設定が必要で、環境によって失敗する」旨を近接表示し、240文字超のpreviewをerrorにしない。Plan itemには長いpathを許可していることと実測文字数を要確認情報として表示する。
 - Metadata不足: artist不足は `UnknownArtist`、album不足は `Unknown_Album` で補完し、読み取れたmetadataと通常の命名規則を使って移動する。metadata全体を読めない場合は両方を補完して元ファイル名を保持する。Plan itemは移動可能でも要確認として `metadata_missing` riskを表示し、metadata読取不能、artist不足、album不足を日本語で区別する。
 - Naming preview: Coreのvalidation/previewを入力変更時に呼び、サンプルmetadataによる階層表示と構文・未知field・空component・Windows path riskをPlan前に日本語で示し、内部codeを理由本文へ露出しない。長さ超過時は対象、実測文字数、上限文字数を表示する。error時はPlan作成を無効化する。
 - Duplicate: skip、安定連番、custom suffixを明示的に選択し、custom選択時だけsuffix templateを表示する。

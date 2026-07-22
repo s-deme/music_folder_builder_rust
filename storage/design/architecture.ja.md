@@ -34,7 +34,9 @@ CoreはUIから独立した命名規則validation/preview APIを持つ。validat
 
 metadataが一部不足する音楽itemは、album artist/artistのfallback値を `UnknownArtist`、albumのfallback値を `Unknown_Album` として通常の命名templateを展開する。読み取れた値はfallbackで置き換えない。metadata全体を読み取れない場合は同じartist/album fallbackを使い、title等に依存する命名を避けて元ファイル名を保持する。itemは移動可能な場合も `risk=metadata_missing` と具体的な不足理由を保持する。生成targetは通常の重複解決、既存target確認、source同一判定、path policyを通し、Plan snapshot確定後に再計算しない。
 
-path policy はtarget path全体を240文字まで許可する。component単体の文字数上限は設けず、ファイル名やフォルダ名が80文字を超えてもpath全体が240文字以下なら許可する。文字数はRustの `chars()` によるUnicode scalar value数で数え、上限値そのものは許可し、上限超過時だけ拒否する。Coreの長さ診断は実測文字数・上限文字数を保持し、Plan reason、命名preview、CLI/Desktop adapterが「パス全体が長すぎます: 241文字（上限240文字）」の日本語表示へ変換する。内部codeは利用者向け理由へ露出しない。既存のrisk分類 `path_too_long` は集計・filterとの後方互換性のため維持する。
+path policy は既定でtarget path全体を240文字まで許可する。component単体の文字数上限は設けず、ファイル名やフォルダ名が80文字を超えてもpath全体が240文字以下なら許可する。文字数はRustの `chars()` によるUnicode scalar value数で数え、上限値そのものは許可し、上限超過時だけ拒否する。
+
+`NamingRules.allow_long_paths` はserde default `false`とし、CLI/Desktopの明示opt-inとPlan snapshotへ保存する。trueの場合は240文字超を `action=move` として許可し、実測長を監査可能にするが、成功を保証しない。Windows Desktop executableはmanifestへ `longPathAware=true` を埋め込み、Windows 10 1607以降の `LongPathsEnabled=1` と組み合わせる。CLIも同じ設定を受けるが、CLI executable自身のmanifest対応をWindows artifactで検証する。applyは従来どおりfilesystem error時にsourceを削除せず、長いpath itemでは環境条件を示す日本語errorをoperation logへ保存する。既定false時はCoreの実測文字数・上限文字数診断と既存 `path_too_long` risk/filterを維持する。
 
 Plan reasonと命名validation issueは永続化・判定用の安定した内部codeを維持し、表示adapterで全codeを日本語へ変換する。既知codeは具体的な日本語文言とし、未知codeは「詳細不明の理由があります」のような日本語fallbackに、調査・copy用の補助情報を分離して提示する。内部codeそのものを主たる利用者向け理由として表示しない。
 
