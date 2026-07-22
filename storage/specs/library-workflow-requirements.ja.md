@@ -62,6 +62,10 @@ IF item が重複 target または既存 target との衝突により skip と�
 
 WHEN 利用者が衝突 item を確認する場合、THEN システム SHALL「どのsourceとどのsourceが同じtargetになるか」または「どのsourceとどの既存targetが衝突するか」を同じ画面で識別可能に表示し、衝突相手を検索や目視で推測することを要求してはならない。
 
+WHEN 衝突 item が一覧内に単独で表示される場合、THEN システム SHALL 展開操作をしなくても、対象source、少なくとも1件の衝突相手、および共通targetをラベル付きで表示する。同一Plan内の相手が複数ある場合は総件数と全件表示操作を併記し、既存targetとの衝突ではその既存ファイルを衝突相手として表示する。
+
+WHEN 衝突するpathを表示する場合、THEN システム SHALL ファイル名を判別しやすく表示するとともに、完全なpathを確認・コピー可能にする。
+
 WHEN 利用者が重複処理を設定する場合、THEN システム SHALL `skip`、安定した`sequence`、templateによるsuffixを明示的に選択可能にし、選択結果をrules snapshotへ保存する。
 
 ### REQ-PLN-004: 手動 target 指定

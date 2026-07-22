@@ -30,6 +30,8 @@ Plan は naming rules snapshot（artist/album/disc/filename/duplicate suffix、�
 
 suffix適用後も残る同一Plan内の衝突は、理由codeだけでなくPlan snapshot内の衝突groupとして保存する。groupは安定したID、比較に用いた正規化target path、および同じPlan内の全member item IDを持つ。各memberのsource pathはPlan itemから取得する。Plan item pageはgroup ID・相手件数だけを返し、展開時のdetail queryがgroup全memberのitem ID/source pathと共通targetを返す。これにより大量一覧を肥大化させず、各衝突行から相手を直接確認できる。plan revisionは全itemの衝突groupを再評価し、親Planのgroupを流用しない。既存targetとの衝突はapply/dry-runのitem結果でsourceと既存target pathを併記する。
 
+Desktopの衝突itemは通常のPlan itemとは異なる診断cardとして表示する。cardの初期状態に「対象ファイル」「衝突相手」「共通の移動先」を配置し、それぞれファイル名を主表示、full pathを補助表示・copy対象とする。同一Plan内の衝突ではdetail queryを表示時に取得し、現在itemを除いた先頭の相手を初期表示する。相手が複数なら「ほかN件」と全件展開を提供する。既存targetとの衝突はoperation logのsource/target/error codeから同じ3項目を構成し、単独のlog行でも相手が既存targetだと分かる文言にする。読み込み中や取得失敗を単なる「衝突」表示へ退行させず、状態と再試行手段を示す。
+
 CoreはUIから独立した命名規則validation/preview APIを持つ。validationはtoken構文、field allow-list、必須component、生成後path policyを返す。NamingRulesの追加fieldはserde defaultを持ち、保存済みsnapshotを読み取れる後方互換性を維持する。
 
 `NamingRules.allow_missing_metadata` はserde default `false`とし、CLI/Desktopの明示opt-inとPlan rules snapshotへ保存する。無効時にartist、album、またはmetadata全体が不足する音楽itemは、targetなしの `action=skip`、`risk=metadata_missing` と具体的な不足理由を保存する。有効時はalbum artist/artistのfallback値を `Unknown Artist`、albumのfallback値を `Unknown Album` として通常の命名templateを展開し、読み取れた値はfallbackで置き換えない。metadata全体を読み取れない場合は同じartist/album fallbackを使い、title等に依存する命名を避けて元ファイル名を保持する。生成targetは通常の重複解決、既存target確認、source同一判定、path policyを通し、Plan snapshot確定後に再計算しない。
