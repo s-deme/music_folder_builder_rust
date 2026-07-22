@@ -35,6 +35,7 @@
 - [x] T30: Desktop の状態 DB を Tauri `app_local_data_dir` に自動配置し、親directoryを作成するcommandを追加する。DB path 入力とlocalStorage保存をUIから削除し、path解決後に履歴・workflowを有効化して、起動時の相対path書込み失敗を防ぐ。CLIの明示的な`--db`は維持し、`make validate`を実行する（T03、T10依存）。
 - [x] T31: 画像の移動先候補と根拠音楽itemをPlan conflict診断へ永続化し、Plan一覧で未決定・候補数・全候補詳細を表示する。候補選択からimmutableな改訂Planを生成し、Core/SQLite/Desktop integration testとDocker検証を追加する（T16、T18、T29依存）。
 - [ ] T32: `NamingRules.allow_long_paths`をserde default falseで追加し、既定240文字拒否とopt-in許可のCore境界test、Plan snapshot、手動target改訂、CLI flag、Desktop checkbox/warning、長いpath apply失敗時のsource保持・日本語logを実装する。Windows Desktop/CLI artifactへ`longPathAware` manifestを組み込み、Windows CIでmanifestと長いpath integration testを検証し、Docker validationを実行する（T07、T11、T18、T27依存）。
+- [x] T34: `NamingRules.allow_missing_metadata`をserde default falseで追加し、無効時はmetadata不足itemをrisk付きskip、有効時は不足artist/albumを `Unknown Artist` / `Unknown Album` で補完してtargetを生成する。rules snapshot、CLI flag、Desktop checkbox、Core/SQLite/integration test、既存snapshotの後方互換testを追加し、`make validate`を実行する（T13、T16、T17、T18、T28依存）。
 
 ## 外部受入確認
 

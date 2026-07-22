@@ -341,7 +341,7 @@ fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
 }
 
 #[test]
-fn missing_metadata_uses_unknown_folders_and_keeps_the_source_filename() {
+fn missing_metadata_is_skipped_by_default() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
     let target = temp.path().join("target");
@@ -374,12 +374,54 @@ fn missing_metadata_uses_unknown_folders_and_keeps_the_source_filename() {
     let page = store
         .list_plan_items(&plan.plan_id, None, 10, None, None)
         .unwrap();
-    assert_eq!(page.items[0].action, "move");
+    assert_eq!(page.items[0].action, "skip");
     assert_eq!(page.items[0].risk, "metadata_missing");
     assert_eq!(page.items[0].reason.as_deref(), Some("metadata_missing"));
+    assert!(page.items[0].target_path.is_none());
+}
+
+#[test]
+fn missing_metadata_uses_unknown_folders_when_allowed() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(
+        fixture("broken/not-audio.mp3"),
+        source.join("unreadable.mp3"),
+    )
+    .unwrap();
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(LoftyMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules {
+                allow_missing_metadata: true,
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 10, None, None)
+        .unwrap();
+    assert_eq!(page.items[0].action, "move");
+    assert_eq!(page.items[0].risk, "metadata_missing");
     let target = page.items[0].target_path.as_deref().unwrap();
-    assert!(target.contains("UnknownArtist"));
-    assert!(target.contains("Unknown_Album"));
+    assert!(target.contains("Unknown Artist"));
+    assert!(target.contains("Unknown Album"));
     assert!(target.ends_with("unreadable.mp3"));
 }
 

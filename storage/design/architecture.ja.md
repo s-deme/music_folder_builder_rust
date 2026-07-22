@@ -32,7 +32,7 @@ suffix適用後も残る同一Plan内の衝突は、理由codeだけでなくPla
 
 CoreはUIから独立した命名規則validation/preview APIを持つ。validationはtoken構文、field allow-list、必須component、生成後path policyを返す。NamingRulesの追加fieldはserde defaultを持ち、保存済みsnapshotを読み取れる後方互換性を維持する。
 
-metadataが一部不足する音楽itemは、album artist/artistのfallback値を `UnknownArtist`、albumのfallback値を `Unknown_Album` として通常の命名templateを展開する。読み取れた値はfallbackで置き換えない。metadata全体を読み取れない場合は同じartist/album fallbackを使い、title等に依存する命名を避けて元ファイル名を保持する。itemは移動可能な場合も `risk=metadata_missing` と具体的な不足理由を保持する。生成targetは通常の重複解決、既存target確認、source同一判定、path policyを通し、Plan snapshot確定後に再計算しない。
+`NamingRules.allow_missing_metadata` はserde default `false`とし、CLI/Desktopの明示opt-inとPlan rules snapshotへ保存する。無効時にartist、album、またはmetadata全体が不足する音楽itemは、targetなしの `action=skip`、`risk=metadata_missing` と具体的な不足理由を保存する。有効時はalbum artist/artistのfallback値を `Unknown Artist`、albumのfallback値を `Unknown Album` として通常の命名templateを展開し、読み取れた値はfallbackで置き換えない。metadata全体を読み取れない場合は同じartist/album fallbackを使い、title等に依存する命名を避けて元ファイル名を保持する。生成targetは通常の重複解決、既存target確認、source同一判定、path policyを通し、Plan snapshot確定後に再計算しない。
 
 path policy は既定でtarget path全体を240文字まで許可する。component単体の文字数上限は設けず、ファイル名やフォルダ名が80文字を超えてもpath全体が240文字以下なら許可する。文字数はRustの `chars()` によるUnicode scalar value数で数え、上限値そのものは許可し、上限超過時だけ拒否する。
 

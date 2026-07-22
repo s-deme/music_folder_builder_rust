@@ -9,7 +9,7 @@
 - Image destination conflict: 移動先欄を `未決定（候補N件）` とし、「移動先候補を確認」から全candidate directory、対応音楽件数、音楽item番号/source pathを表示する。各candidateに「この移動先を選択」を置き、選択時は改訂Planを作成する。
 - Naming: 標準、discなし、年付き、元ファイル名保持、customのプリセットを起点に、artist/album/disc/filenameを日本語ラベル付きフォームで編集する。field tokenは選択挿入でき、元ファイル名保持時は競合するtemplate入力を無効化する。内部JSONは通常UIへ露出しない。
 - Long path option: 命名設定に既定OFFの「Windowsの長いパスを許可」を置く。ON時は「Windows側の長いパス設定が必要で、環境によって失敗する」旨を近接表示し、240文字超のpreviewをerrorにしない。Plan itemには長いpathを許可していることと実測文字数を要確認情報として表示する。
-- Metadata不足: artist不足は `UnknownArtist`、album不足は `Unknown_Album` で補完し、読み取れたmetadataと通常の命名規則を使って移動する。metadata全体を読めない場合は両方を補完して元ファイル名を保持する。Plan itemは移動可能でも要確認として `metadata_missing` riskを表示し、metadata読取不能、artist不足、album不足を日本語で区別する。
+- Metadata不足: 「メタデータ不足を無視してフォルダを作成する」checkboxを命名設定に置き、既定は無効とする。無効時は不足itemをskipする。有効時はartist不足を `Unknown Artist`、album不足を `Unknown Album` で補完し、読み取れたmetadataと通常の命名規則を使って移動する。metadata全体を読めない場合は両方を補完して元ファイル名を保持する。Plan itemは移動可能でも要確認として `metadata_missing` riskを表示し、metadata読取不能、artist不足、album不足を日本語で区別する。
 - Naming preview: Coreのvalidation/previewを入力変更時に呼び、サンプルmetadataによる階層表示と構文・未知field・空component・Windows path riskをPlan前に日本語で示し、内部codeを理由本文へ露出しない。長さ超過時は対象、実測文字数、上限文字数を表示する。error時はPlan作成を無効化する。
 - Duplicate: skip、安定連番、custom suffixを明示的に選択し、custom選択時だけsuffix templateを表示する。
 - Logs/history: Tauri event を append-only ring buffer に表示し、完全履歴は SQLite cursor query で取得する。履歴は日時、種別の日本語ラベル、状態 badge、結果集計を列にした選択可能な table とし、内部 ID は短縮表示する。種別・状態・ID filter、新旧 sort、`(started_at,id)` の複合 cursor を server side で処理する。同じ scan 由来の run は workflow group として区切る。選択した run は別の detail panel に完全 ID と copy、親 run、開始・終了・所要時間、集計、「この実行を開く」を表示する。削除は detail panel の副次的かつ危険な操作とし、completed run は依存 run も含む削除予定件数を確認してから整理でき、running run は削除 UI を無効化する。空、loading、末尾到達、error の各状態を文言で示す。

@@ -70,6 +70,8 @@ pub struct NamingRules {
     pub use_source_filename: bool,
     pub use_source_image_filename: bool,
     #[serde(default)]
+    pub allow_missing_metadata: bool,
+    #[serde(default)]
     pub duplicate_strategy: DuplicateStrategy,
 }
 
@@ -93,6 +95,7 @@ impl Default for NamingRules {
             duplicate_suffix_template: "".into(),
             use_source_filename: false,
             use_source_image_filename: false,
+            allow_missing_metadata: false,
             duplicate_strategy: DuplicateStrategy::Skip,
         }
     }
@@ -559,6 +562,7 @@ mod tests {
         let json = r#"{"artist_dir_template":"{artist}","album_dir_template":"{album}","disc_dir_template":"","filename_template":"{title}{extension}","duplicate_suffix_template":"","use_source_filename":false,"use_source_image_filename":false}"#;
         let rules: NamingRules = serde_json::from_str(json).expect("old naming rules");
         assert_eq!(rules.duplicate_strategy, DuplicateStrategy::Legacy);
+        assert!(!rules.allow_missing_metadata);
     }
 }
 

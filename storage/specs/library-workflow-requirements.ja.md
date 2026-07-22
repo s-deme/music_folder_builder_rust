@@ -74,9 +74,13 @@ WHEN 音声 metadata を読む場合、THEN システム SHALL 対応形式の a
 
 ### REQ-MDA-002: metadata 不足時の移動
 
-WHEN artistまたはalbumが不足した音楽itemをplanする場合、THEN システム SHALL 不足するartistを `UnknownArtist`、不足するalbumを `Unknown_Album` で補完して通常の命名規則からtargetを生成し、`metadata_missing` riskと不足理由を保存する。
+WHEN 利用者が metadata 不足を許可するオプションを有効にし、artistまたはalbumが不足した音楽itemをplanする場合、THEN システム SHALL 不足するartistを `Unknown Artist`、不足するalbumを `Unknown Album` で補完して通常の命名規則からtargetを生成し、`metadata_missing` riskと不足理由を保存する。
 
-WHEN metadata全体を読み取れない音楽itemをplanする場合、THEN システム SHALL artistを `UnknownArtist`、albumを `Unknown_Album` で補完し、元ファイル名を保持してtargetを生成し、`metadata_missing` riskと理由を保存する。
+WHEN 利用者が metadata 不足を許可するオプションを有効にし、metadata全体を読み取れない音楽itemをplanする場合、THEN システム SHALL artistを `Unknown Artist`、albumを `Unknown Album` で補完し、元ファイル名を保持してtargetを生成し、`metadata_missing` riskと理由を保存する。
+
+IF metadata 不足を許可するオプションが無効で、artist、album、またはmetadata全体が不足する場合、THEN システム SHALL 当該itemを `metadata_missing` risk付きでskipし、targetを生成してはならない。
+
+WHEN metadata 不足を許可する設定を保存する場合、THEN システム SHALL 当該設定を命名規則およびPlanのrules snapshotへ保存し、設定が存在しない既存データでは安全側の無効を既定値とする。
 
 IF metadata不足時に生成したtargetが既存target、重複target、sourceと同一、またはWindows path policy違反となる場合、THEN システム SHALL 当該itemをskipして理由を保存し、既存targetを上書きしてはならない。
 

@@ -48,6 +48,9 @@ enum Command {
         use_source_filename: bool,
         #[arg(long)]
         use_source_image_filename: bool,
+        /// Create Unknown Artist/Unknown Album folders instead of skipping missing metadata.
+        #[arg(long)]
+        allow_missing_metadata: bool,
     },
     Apply {
         #[arg(long)]
@@ -121,6 +124,7 @@ fn main() -> anyhow::Result<()> {
             duplicate_strategy,
             use_source_filename,
             use_source_image_filename,
+            allow_missing_metadata,
         } => {
             let store = Arc::new(SqliteScanStore::open(&db).map_err(anyhow::Error::msg)?);
             let mut naming = music_folder_core::NamingRules::default();
@@ -147,6 +151,7 @@ fn main() -> anyhow::Result<()> {
             };
             naming.use_source_filename = use_source_filename;
             naming.use_source_image_filename = use_source_image_filename;
+            naming.allow_missing_metadata = allow_missing_metadata;
             let result = PlanUseCase { store }
                 .execute(
                     &scan_run_id,

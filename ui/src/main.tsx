@@ -20,11 +20,11 @@ type PlanConflictDetail = { id: string; kind: string; target_path: string; exist
 type Log = { id: string; execution_id: string; sequence_no: number; source_path: string; target_path?: string; action: string; result: string; error?: string; created_at: number };
 type Metric = { phase: string; elapsed_ms: number; item_count: number };
 type DuplicateStrategy = "skip" | "sequence" | "template";
-type NamingRules = { artist_dir_template: string; album_dir_template: string; disc_dir_template: string; filename_template: string; duplicate_suffix_template: string; use_source_filename: boolean; use_source_image_filename: boolean; duplicate_strategy: DuplicateStrategy };
+type NamingRules = { artist_dir_template: string; album_dir_template: string; disc_dir_template: string; filename_template: string; duplicate_suffix_template: string; use_source_filename: boolean; use_source_image_filename: boolean; allow_missing_metadata: boolean; duplicate_strategy: DuplicateStrategy };
 type NamingField = "artist_dir_template" | "album_dir_template" | "disc_dir_template" | "filename_template" | "duplicate_suffix_template";
 type NamingPreview = { relative_path: string; issues: { field: string; code: string; message: string }[] };
 type CleanupPreview = { plans: number; executions: number; logs: number; blocked: boolean };
-const defaultNaming: NamingRules = { artist_dir_template: "{album_artist}", album_dir_template: "{album}", disc_dir_template: "[{disc_no:02d}]", filename_template: "[{track_no:02d}_]{title}{extension}", duplicate_suffix_template: "_{disc_no:02d}", use_source_filename: false, use_source_image_filename: false, duplicate_strategy: "skip" };
+const defaultNaming: NamingRules = { artist_dir_template: "{album_artist}", album_dir_template: "{album}", disc_dir_template: "[{disc_no:02d}]", filename_template: "[{track_no:02d}_]{title}{extension}", duplicate_suffix_template: "_{disc_no:02d}", use_source_filename: false, use_source_image_filename: false, allow_missing_metadata: false, duplicate_strategy: "skip" };
 const presets: Record<string, NamingRules> = { standard: defaultNaming, flatDisc: { ...defaultNaming, disc_dir_template: "" }, withYear: { ...defaultNaming, album_dir_template: "[{year} - ]{album}" }, source: { ...defaultNaming, use_source_filename: true, use_source_image_filename: true } };
 const tokens = ["{album_artist}", "{artist}", "{album}", "{title}", "{track_no:02d}", "{disc_no:02d}", "{year}", "{source_stem}", "{extension}"];
 const emptyPlanCounts: PlanItemCounts = { moves: 0, skips: 0, needs_attention: 0, conflicts: 0, invalid_target: 0, metadata_missing: 0, path_too_long: 0 };
@@ -32,10 +32,10 @@ const riskLabels: Record<string, string> = { none: "問題なし", conflict: "�
 const actionLabels: Record<string, string> = { move: "移動", skip: "スキップ" };
 const reasonLabels: Record<string, string> = {
   empty_path: "移動先のパスが空です",
-  metadata_missing: "メタデータを読み取れないため、UnknownArtist / Unknown_Albumと元ファイル名で補完しました",
-  artist_missing: "アーティスト情報がないため、UnknownArtistで補完しました",
-  album_missing: "アルバム情報がないため、Unknown_Albumで補完しました",
-  artist_album_missing: "アーティスト情報とアルバム情報がないため、UnknownArtist / Unknown_Albumで補完しました",
+  metadata_missing: "メタデータを読み取れません",
+  artist_missing: "アーティスト情報がありません",
+  album_missing: "アルバム情報がありません",
+  artist_album_missing: "アーティスト情報とアルバム情報がありません",
   source_equals_target: "移動元と移動先が同じです",
   target_conflict: "同じ移動先になるファイルがあります",
   companion_without_music: "対応する音楽ファイルがありません",
@@ -74,6 +74,7 @@ function NamingEditor({ naming, setNaming, preset, setPreset, preview }: { namin
     {fields.map(([key, label]) => <label key={key}>{label}<input disabled={key === "filename_template" && naming.use_source_filename} value={naming[key]} onChange={event => update(key, event.target.value)} /></label>)}
     <div className="actions token-insert"><select value={field} onChange={event => setField(event.target.value as NamingField)}>{fields.map(([key, label]) => <option value={key} key={key}>{label}</option>)}<option value="duplicate_suffix_template">同名ファイルの末尾</option></select><select value={token} onChange={event => setToken(event.target.value)}>{tokens.map(value => <option key={value}>{value}</option>)}</select><button type="button" onClick={() => update(field, naming[field] + token)}>項目を挿入</button><button type="button" onClick={() => { setPreset("standard"); setNaming({ ...defaultNaming }); }}>既定値に戻す</button></div>
     <label className="check"><input type="checkbox" checked={naming.use_source_filename} onChange={event => update("use_source_filename", event.target.checked)} />元の音楽ファイル名を使用</label><label className="check"><input type="checkbox" checked={naming.use_source_image_filename} onChange={event => update("use_source_image_filename", event.target.checked)} />元の画像ファイル名を使用</label>
+    <label className="check"><input type="checkbox" checked={naming.allow_missing_metadata} onChange={event => update("allow_missing_metadata", event.target.checked)} />メタデータ不足を無視してフォルダを作成する（Unknown Artist / Unknown Album）</label>
     <label>同名ファイルの処理<select value={naming.duplicate_strategy} onChange={event => update("duplicate_strategy", event.target.value)}><option value="skip">安全のためスキップ</option><option value="sequence">安定した連番を付ける</option><option value="template">カスタム末尾を付ける</option></select></label>{naming.duplicate_strategy === "template" && <label>同名ファイルの末尾<input value={naming.duplicate_suffix_template} onChange={event => update("duplicate_suffix_template", event.target.value)} /></label>}
     <div className="naming-preview"><b>生成プレビュー</b><code>{preview?.relative_path ?? "確認中…"}</code>{preview?.issues.map((issue, index) => <p className="error" key={`${issue.field}-${issue.code}-${index}`}>{issue.message}</p>)}</div>
   </fieldset>;

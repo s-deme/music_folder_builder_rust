@@ -682,13 +682,6 @@ fn make_plan_item(
         .or(metadata.artist.as_deref())
         .is_none();
     let album_missing = metadata.album.is_none();
-    if artist_missing {
-        metadata.artist = Some("UnknownArtist".into());
-        metadata.album_artist = Some("UnknownArtist".into());
-    }
-    if album_missing {
-        metadata.album = Some("Unknown_Album".into());
-    }
     let missing_reason = if metadata_unreadable {
         Some("metadata_missing")
     } else if artist_missing && album_missing {
@@ -700,6 +693,16 @@ fn make_plan_item(
     } else {
         None
     };
+    if let Some(reason) = missing_reason.filter(|_| !naming.allow_missing_metadata) {
+        return skipped_plan_item(ordinal, file, Risk::MetadataMissing, reason);
+    }
+    if artist_missing {
+        metadata.artist = Some("Unknown Artist".into());
+        metadata.album_artist = Some("Unknown Artist".into());
+    }
+    if album_missing {
+        metadata.album = Some("Unknown Album".into());
+    }
     let source_stem = file
         .path
         .file_stem()
@@ -888,6 +891,47 @@ mod snapshot_tests {
         let before = plan_snapshot_hash(&[item.clone()]);
         item.target = Some(PathBuf::from("C:/out/b.mp3"));
         assert_ne!(before, plan_snapshot_hash(&[item]));
+    }
+
+    #[test]
+    fn missing_metadata_is_skipped_unless_explicitly_allowed() {
+        let file = ScannedFile {
+            id: Uuid::nil(),
+            path: PathBuf::from("C:/in/song.mp3"),
+            fingerprint: FileFingerprint {
+                size_bytes: 1,
+                mtime_ns: 1,
+            },
+            metadata: None,
+            kind: FileKind::Music,
+        };
+        let skipped = make_plan_item(
+            1,
+            file.clone(),
+            Path::new("C:/out"),
+            &NamingRules::default(),
+        );
+        assert_eq!(skipped.action, PlanAction::Skip);
+        assert_eq!(skipped.risk, Risk::MetadataMissing);
+        assert!(skipped.target.is_none());
+
+        let allowed = make_plan_item(
+            1,
+            file,
+            Path::new("C:/out"),
+            &NamingRules {
+                allow_missing_metadata: true,
+                ..NamingRules::default()
+            },
+        );
+        assert_eq!(allowed.action, PlanAction::Move);
+        assert_eq!(allowed.risk, Risk::MetadataMissing);
+        assert_eq!(
+            allowed.target,
+            Some(PathBuf::from(
+                "C:/out/Unknown Artist/Unknown Album/song.mp3"
+            ))
+        );
     }
 }
 
