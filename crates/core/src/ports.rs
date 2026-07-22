@@ -1,6 +1,6 @@
 use crate::{
-    ApplyItem, FileFingerprint, NamingRules, OperationLog, PlanItem, ScannedFile, TrackMetadata,
-    VerifyItem,
+    ApplyItem, FileFingerprint, NamingRules, OperationLog, OperationResult, PlanItem, RunStatus,
+    ScannedFile, TrackMetadata, VerifyItem,
 };
 use std::path::Path;
 
@@ -15,7 +15,7 @@ pub trait ScanStore: Send + Sync {
     ) -> Result<Option<TrackMetadata>, String>;
     fn begin_scan(&self, source: &Path) -> Result<String, String>;
     fn save_batch(&self, scan_id: &str, files: &[ScannedFile]) -> Result<(), String>;
-    fn finish_scan(&self, scan_id: &str, status: &str, warnings: u64) -> Result<(), String>;
+    fn finish_scan(&self, scan_id: &str, status: RunStatus, warnings: u64) -> Result<(), String>;
     fn save_scan_warning(&self, _scan_id: &str, _warning: &str) -> Result<(), String> {
         Ok(())
     }
@@ -57,6 +57,7 @@ pub trait PlanStore: Send + Sync {
         risk_count: u64,
         snapshot_hash: &str,
     ) -> Result<(), String>;
+    fn fail_plan(&self, plan_id: &str) -> Result<(), String>;
     fn record_metric(
         &self,
         _run_id: &str,
@@ -95,7 +96,7 @@ pub trait ApplyStore: Send + Sync {
     fn finish_execution(
         &self,
         execution_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         skipped: u64,
         failed: u64,
@@ -127,13 +128,13 @@ pub trait VerifyStore: Send + Sync {
         &self,
         execution_id: &str,
         operation_id: &str,
-        result: &str,
+        result: OperationResult,
         error: Option<&str>,
     ) -> Result<(), String>;
     fn finish_verify(
         &self,
         verify_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         failed: u64,
     ) -> Result<(), String>;
@@ -155,13 +156,13 @@ pub trait RollbackStore: Send + Sync {
         &self,
         execution_id: &str,
         operation_id: &str,
-        result: &str,
+        result: OperationResult,
         error: Option<&str>,
     ) -> Result<(), String>;
     fn finish_rollback(
         &self,
         rollback_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         skipped: u64,
         failed: u64,

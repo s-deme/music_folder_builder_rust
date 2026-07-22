@@ -25,6 +25,10 @@
 - Linux/Windows CI、Windows固有Unicode/予約名/長いpath/reparse試験、Tauri bundle artifact定義。
 - GitHub Actions run `29350015563`でLinux/Windows検証とTauri bundle生成が成功。
 - Windows artifact内のMSIおよびNSIS setup executableの生成・ダウンロード確認。
+- workflow error・run status・operation resultをCoreで型付けし、開始済みrunの失敗終端処理を追加。
+- applyのcopy後source残存を独立した操作状態として保存し、rollback前にexpected sizeと部分copy状態を検証。
+- Windows target比較を共通path keyへ統一し、SQLite migrationをtransactional moduleへ分離。
+- SQLite row、React model/conflict component、integration fixture supportを分離し、重複Desktop scan commandを撤去。
 
 ## ローカルで残っている実装作業
 

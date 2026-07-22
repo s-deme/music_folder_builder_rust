@@ -37,6 +37,8 @@
 - [ ] T32: `NamingRules.allow_long_paths`をserde default falseで追加し、既定240文字拒否とopt-in許可のCore境界test、Plan snapshot、手動target改訂、CLI flag、Desktop checkbox/warning、長いpath apply失敗時のsource保持・日本語logを実装する。Windows Desktop/CLI artifactへ`longPathAware` manifestを組み込み、Windows CIでmanifestと長いpath integration testを検証し、Docker validationを実行する（T07、T11、T18、T27依存）。
 - [ ] T33: DesktopのPlan一覧と実行ログで衝突を診断card表示し、展開前から対象source、先頭の衝突相手、共通target、相手総数をラベル付きで示す。ファイル名を主表示しfull pathの確認・copyを可能にし、複数相手の全件展開、既存target衝突、detail読込中・失敗・再試行を実装する。単独表示、未読込page上の相手、長い同名path、既存targetのUI testとDesktop integration testを追加し、`make validate`を実行する（T18、T29依存）。
 - [x] T34: `NamingRules.allow_missing_metadata`をserde default falseで追加し、無効時はmetadata不足itemをrisk付きskip、有効時は不足artist/albumを `Unknown Artist` / `Unknown Album` で補完してtargetを生成する。rules snapshot、CLI flag、Desktop checkbox、Core/SQLite/integration test、既存snapshotの後方互換testを追加し、`make validate`を実行する（T13、T16、T17、T18、T28依存）。
+- [x] T35: 同梱画像の複数target候補がすべて同一album directory直下のdisc directoryである場合、命名規則によるdisc階層の生成根拠を使ってalbum directoryへ正規化する。sourceのdisc内画像、異なるalbum、空またはcustomのdisc template、画像target衝突のCore・SQLite integration testを追加し、`make validate`を実行する（T16、T31依存）。
+- [x] T36: Coreのexecution/path policy、SQLiteのmigration/row、Reactのmodel/conflict component、integration test supportを責務別moduleへ分割する。typed workflow error/status/result、失敗時run終端化、metadata/cache error区別、apply中間状態、expected size付きrollback前提条件、WindowsPathKey、transactional SQLite migrationを導入し、重複Desktop scan commandを撤去してDocker validationを実行する（T03、T05、T07、T08、T10、T11依存）。
 
 ## 外部受入確認
 

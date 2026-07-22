@@ -1,4 +1,4 @@
-use music_folder_core::ports::ManualTargetChange;
+use music_folder_core::ports::{ManualTargetChange, MetadataReader};
 use music_folder_core::usecases::{
     ApplyUseCase, CancellationToken, PlanOptions, PlanUseCase, RevisePlanUseCase, RollbackUseCase,
     ScanOptions, ScanUseCase, VerifyUseCase,
@@ -6,13 +6,37 @@ use music_folder_core::usecases::{
 use music_folder_infra::{
     lofty_reader::LoftyMetadataReader, sqlite::SqliteScanStore, windows_fs::LocalFileSystem,
 };
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::Path, sync::Arc};
 use tempfile::tempdir;
 
-fn fixture(path: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(path)
+mod support;
+use support::fixture;
+
+struct DiscMetadataReader;
+
+impl MetadataReader for DiscMetadataReader {
+    fn read(&self, path: &Path) -> Result<music_folder_core::TrackMetadata, String> {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let (album, disc_no) = match stem {
+            "disc-one" => ("Shared Album", 1),
+            "disc-two" => ("Shared Album", 2),
+            "album-a" => ("Album A", 1),
+            "album-b" => ("Album B", 1),
+            _ => ("Shared Album", 1),
+        };
+        Ok(music_folder_core::TrackMetadata {
+            artist: Some("Artist".into()),
+            album_artist: Some("Album Artist".into()),
+            album: Some(album.into()),
+            title: Some(stem.into()),
+            track_no: Some(1),
+            disc_no: Some(disc_no),
+            year: None,
+        })
+    }
 }
 
 #[test]
@@ -201,7 +225,7 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         .execute(&plan.plan_id, true)
         .err()
         .expect("tampered snapshot must be rejected");
-    assert_eq!(mismatch, "plan_snapshot_mismatch");
+    assert_eq!(mismatch.code(), "plan_snapshot_mismatch");
 }
 
 #[test]
@@ -287,6 +311,181 @@ fn plan_moves_companion_image_to_music_target_directory() {
         .unwrap();
     assert_eq!(second_page.items.len(), 1);
     assert_eq!(second_page.next_cursor, None);
+}
+
+#[test]
+fn plan_moves_album_image_to_common_parent_but_keeps_disc_image_in_disc() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let disc_one = source.join("disc-one");
+    let disc_two = source.join("disc-two");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&disc_one).unwrap();
+    fs::create_dir_all(&disc_two).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), disc_one.join("disc-one.mp3")).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), disc_two.join("disc-two.mp3")).unwrap();
+    fs::write(source.join("cover.jpg"), b"album image").unwrap();
+    fs::write(disc_one.join("booklet.jpg"), b"disc image").unwrap();
+
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(DiscMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target.clone(),
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+
+    let album_image = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
+        .unwrap();
+    assert_eq!(album_image.items.len(), 1);
+    assert_eq!(album_image.items[0].action, "move");
+    assert_eq!(album_image.items[0].risk, "none");
+    assert_eq!(
+        album_image.items[0].target_path.as_deref(),
+        Some(
+            target
+                .join("Album Artist")
+                .join("Shared Album")
+                .join("cover.jpg")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+
+    let disc_image = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("booklet.jpg"), None)
+        .unwrap();
+    assert_eq!(disc_image.items.len(), 1);
+    assert_eq!(
+        disc_image.items[0].target_path.as_deref(),
+        Some(
+            target
+                .join("Album Artist")
+                .join("Shared Album")
+                .join("01")
+                .join("booklet.jpg")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+}
+
+#[test]
+fn plan_keeps_image_ambiguous_when_disc_targets_belong_to_different_albums() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("album-a.mp3")).unwrap();
+    fs::copy(fixture("mp3/japanese.mp3"), source.join("album-b.mp3")).unwrap();
+    fs::write(source.join("cover.jpg"), b"album image").unwrap();
+
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(DiscMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
+        .unwrap();
+    let image = &page.items[0];
+    assert_eq!(image.action, "skip");
+    assert_eq!(image.reason.as_deref(), Some("companion_target_ambiguous"));
+    assert_eq!(image.conflict_member_count, 2);
+    let detail = store
+        .get_plan_conflict_detail(&plan.plan_id, image.conflict_group_id.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(detail.candidates.len(), 2);
+}
+
+#[test]
+fn plan_sequences_same_named_images_collapsed_to_the_album_directory() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    for edition in ["edition-a", "edition-b"] {
+        let edition_root = source.join(edition);
+        let disc_one = edition_root.join("disc-one");
+        let disc_two = edition_root.join("disc-two");
+        fs::create_dir_all(&disc_one).unwrap();
+        fs::create_dir_all(&disc_two).unwrap();
+        fs::copy(fixture("mp3/japanese.mp3"), disc_one.join("disc-one.mp3")).unwrap();
+        fs::copy(fixture("mp3/japanese.mp3"), disc_two.join("disc-two.mp3")).unwrap();
+        fs::write(edition_root.join("cover.jpg"), b"album image").unwrap();
+    }
+
+    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let scan = ScanUseCase {
+        fs: Arc::new(LocalFileSystem),
+        metadata: Arc::new(DiscMetadataReader),
+        store: Arc::clone(&store),
+    }
+    .execute(&source, &ScanOptions::default())
+    .unwrap();
+    let plan = PlanUseCase {
+        store: Arc::clone(&store),
+    }
+    .execute(
+        &scan.scan_id,
+        &PlanOptions {
+            target_root: target,
+            batch_size: 10,
+            naming: music_folder_core::NamingRules::default(),
+        },
+    )
+    .unwrap();
+
+    let page = store
+        .list_plan_items(&plan.plan_id, None, 10, Some("cover.jpg"), None)
+        .unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(page
+        .items
+        .iter()
+        .all(|item| item.action == "move" && item.risk == "none"));
+    let mut names = page
+        .items
+        .iter()
+        .map(|item| {
+            Path::new(item.target_path.as_deref().unwrap())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["cover.jpg", "cover_2.jpg"]);
 }
 
 #[test]

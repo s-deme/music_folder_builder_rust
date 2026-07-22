@@ -1,12 +1,7 @@
 use music_folder_core::ports::MetadataReader;
 use music_folder_infra::lofty_reader::LoftyMetadataReader;
-use std::path::PathBuf;
-
-fn fixture(path: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(path)
-}
+mod support;
+use support::fixture;
 
 #[test]
 fn reads_japanese_tags_from_each_supported_format() {

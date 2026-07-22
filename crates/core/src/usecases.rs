@@ -6,13 +6,15 @@ use crate::{
         ApplyStore, FileMutator, FileSystem, ManualTargetChange, MetadataReader, PlanRevisionStore,
         PlanStore, RollbackStore, ScanStore, VerifyStore,
     },
-    render_template, sanitize_component, DuplicateStrategy, FileKind, NamingRules, OperationLog,
-    PlanAction, PlanConflictCandidate, PlanItem, Risk, ScannedFile, TrackMetadata,
+    render_template, sanitize_component, windows_path_key, DuplicateStrategy, FileKind,
+    NamingRules, OperationAction, OperationLog, OperationResult, PlanAction, PlanConflictCandidate,
+    PlanItem, Risk, RunStatus, ScannedFile, TrackMetadata, WorkflowResult,
 };
 use crossbeam_channel::{bounded, Receiver};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -69,40 +71,85 @@ pub struct RollbackUseCase<S, F> {
     pub files: Arc<F>,
 }
 impl<S: RollbackStore, F: FileMutator> RollbackUseCase<S, F> {
-    pub fn execute(&self, execution_id: &str, dry_run: bool) -> Result<RollbackResult, String> {
+    pub fn execute(&self, execution_id: &str, dry_run: bool) -> WorkflowResult<RollbackResult> {
         let started = Instant::now();
         let rollback_id = self.store.begin_rollback(execution_id, dry_run)?;
-        let mut items = self.store.load_rollback_items(execution_id)?;
+        let mut items = match self.store.load_rollback_items(execution_id) {
+            Ok(items) => items,
+            Err(error) => {
+                let _ = self
+                    .store
+                    .finish_rollback(&rollback_id, RunStatus::Failed, 0, 0, 0);
+                return Err(error.into());
+            }
+        };
         items.sort_by_key(|item| std::cmp::Reverse(item.sequence_no));
         let (mut success, mut skipped, mut failed) = (0, 0, 0);
         for item in items {
             let (result, error) = match item.target.as_ref() {
                 None => {
                     skipped += 1;
-                    ("skipped", Some("target_missing_in_log"))
+                    (OperationResult::Skipped, Some("target_missing_in_log"))
                 }
                 Some(t) if !self.files.exists(t) => {
                     failed += 1;
-                    ("failed", Some("target_missing"))
+                    (OperationResult::Failed, Some("target_missing"))
+                }
+                Some(t)
+                    if item
+                        .expected_size
+                        .is_some_and(|size| self.files.size(t).ok() != Some(size)) =>
+                {
+                    failed += 1;
+                    (OperationResult::Failed, Some("target_changed_since_apply"))
+                }
+                Some(t) if item.action == OperationAction::CopySourceRetained => {
+                    let source_matches = self.files.exists(&item.source)
+                        && item
+                            .expected_size
+                            .is_none_or(|size| self.files.size(&item.source).ok() == Some(size));
+                    if !source_matches {
+                        failed += 1;
+                        (
+                            OperationResult::Failed,
+                            Some("source_changed_after_partial_copy"),
+                        )
+                    } else if dry_run {
+                        success += 1;
+                        (OperationResult::Success, None)
+                    } else {
+                        match self.files.delete_file(t) {
+                            Ok(()) => {
+                                success += 1;
+                                (OperationResult::Success, None)
+                            }
+                            Err(_) => {
+                                failed += 1;
+                                (OperationResult::Failed, Some("partial_copy_cleanup_failed"))
+                            }
+                        }
+                    }
                 }
                 Some(_) if self.files.exists(&item.source) => {
                     skipped += 1;
-                    ("skipped", Some("source_already_exists"))
+                    (OperationResult::Skipped, Some("source_already_exists"))
                 }
                 Some(_) if dry_run => {
                     success += 1;
-                    ("success", None)
+                    (OperationResult::Success, None)
                 }
-                Some(t) if item.action == "move" => match self.files.move_file(t, &item.source) {
-                    Ok(()) => {
-                        success += 1;
-                        ("success", None)
+                Some(t) if item.action == OperationAction::Move => {
+                    match self.files.move_file(t, &item.source) {
+                        Ok(()) => {
+                            success += 1;
+                            (OperationResult::Success, None)
+                        }
+                        Err(_) => {
+                            failed += 1;
+                            (OperationResult::Failed, Some("reverse_move_failed"))
+                        }
                     }
-                    Err(_) => {
-                        failed += 1;
-                        ("failed", Some("reverse_move_failed"))
-                    }
-                },
+                }
                 Some(t) => match self.files.copy_file(t, &item.source).and_then(|_| {
                     if self.files.size(t)? == self.files.size(&item.source)? {
                         Ok(())
@@ -113,23 +160,30 @@ impl<S: RollbackStore, F: FileMutator> RollbackUseCase<S, F> {
                     Ok(()) => match self.files.delete_file(t) {
                         Ok(()) => {
                             success += 1;
-                            ("success", None)
+                            (OperationResult::Success, None)
                         }
                         Err(_) => {
                             failed += 1;
-                            ("failed", Some("reverse_target_delete_failed"))
+                            (
+                                OperationResult::Failed,
+                                Some("reverse_target_delete_failed"),
+                            )
                         }
                     },
                     Err(_) => {
                         failed += 1;
-                        ("failed", Some("reverse_copy_verify_failed"))
+                        (OperationResult::Failed, Some("reverse_copy_verify_failed"))
                     }
                 },
             };
             self.store
                 .save_rollback_result(execution_id, &item.operation_id, result, error)?;
         }
-        let status = if failed == 0 { "completed" } else { "partial" };
+        let status = if failed == 0 {
+            RunStatus::Completed
+        } else {
+            RunStatus::Partial
+        };
         self.store
             .finish_rollback(&rollback_id, status, success, skipped, failed)?;
         self.store.record_metric(
@@ -175,7 +229,7 @@ pub struct ScanUseCase<F, M, S> {
 impl<F: FileSystem + 'static, M: MetadataReader + 'static, S: ScanStore + 'static>
     ScanUseCase<F, M, S>
 {
-    pub fn execute(&self, root: &Path, options: &ScanOptions) -> Result<ScanResult, String> {
+    pub fn execute(&self, root: &Path, options: &ScanOptions) -> WorkflowResult<ScanResult> {
         let started = Instant::now();
         let scan_id = self.store.begin_scan(root)?;
         let worker_count = options.workers.max(1);
@@ -242,7 +296,7 @@ impl<F: FileSystem + 'static, M: MetadataReader + 'static, S: ScanStore + 'stati
         let mut total = 0;
         let mut tag_read_ms = 0;
         let mut db_write_ms = 0;
-        consume_scan_results(
+        if let Err(error) = consume_scan_results(
             &result_receiver,
             &mut batch,
             &mut hits,
@@ -262,26 +316,47 @@ impl<F: FileSystem + 'static, M: MetadataReader + 'static, S: ScanStore + 'stati
             &started,
             &mut tag_read_ms,
             &enumerated_count,
-        )?;
-        let (enumeration, enumerate_ms, enumerated) = enumerator
-            .join()
-            .map_err(|_| "scan enumerator panicked".to_string())?;
+        ) {
+            options.cancellation.cancel();
+            let _ = self
+                .store
+                .finish_scan(&scan_id, RunStatus::Failed, warnings);
+            return Err(error.into());
+        }
+        let (enumeration, enumerate_ms, enumerated) = match enumerator.join() {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = self
+                    .store
+                    .finish_scan(&scan_id, RunStatus::Failed, warnings);
+                return Err("scan enumerator panicked".into());
+            }
+        };
         if let Err(error) = enumeration {
-            self.store.finish_scan(&scan_id, "failed", warnings)?;
-            return Err(error);
+            self.store
+                .finish_scan(&scan_id, RunStatus::Failed, warnings)?;
+            return Err(error.into());
         }
         for worker in workers {
-            worker
-                .join()
-                .map_err(|_| "scan worker panicked".to_string())?;
+            if worker.join().is_err() {
+                let _ = self
+                    .store
+                    .finish_scan(&scan_id, RunStatus::Failed, warnings);
+                return Err("scan worker panicked".into());
+            }
         }
         if !batch.is_empty() {
-            self.store.save_batch(&scan_id, &batch)?;
+            if let Err(error) = self.store.save_batch(&scan_id, &batch) {
+                let _ = self
+                    .store
+                    .finish_scan(&scan_id, RunStatus::Failed, warnings);
+                return Err(error.into());
+            }
         }
         let status = if options.cancellation.is_cancelled() {
-            "cancelled"
+            RunStatus::Cancelled
         } else {
-            "completed"
+            RunStatus::Completed
         };
         self.store.finish_scan(&scan_id, status, warnings)?;
         self.store.record_metric(
@@ -351,16 +426,35 @@ fn spawn_scan_worker<
             let cached = if is_image {
                 None
             } else {
-                store.previous_metadata(&path, &fingerprint).ok().flatten()
+                match store.previous_metadata(&path, &fingerprint) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let warning =
+                            format!("metadata_cache_read_failed:{}:{error}", path.display());
+                        let _ = output.send(ScanWorkerResult::Warning(warning));
+                        None
+                    }
+                }
             };
             let tag_started = Instant::now();
             let cache_hit = cached.is_some();
+            let mut read_error_reported = false;
             let metadata = if is_image {
                 None
+            } else if cached.is_some() {
+                cached
             } else {
-                cached.or_else(|| metadata.read(&path).ok())
+                match metadata.read(&path) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        read_error_reported = true;
+                        let warning = format!("metadata_read_failed:{}:{error}", path.display());
+                        let _ = output.send(ScanWorkerResult::Warning(warning));
+                        None
+                    }
+                }
             };
-            let warning = !is_image && metadata.is_none();
+            let warning = !is_image && metadata.is_none() && !read_error_reported;
             let _ = output.send(ScanWorkerResult::Record {
                 file: ScannedFile {
                     id: Uuid::new_v4(),
@@ -475,31 +569,38 @@ pub struct PlanUseCase<S> {
 pub struct RevisePlanUseCase<S> {
     pub store: Arc<S>,
 }
+
+#[derive(Clone)]
+struct MusicImageAnchor {
+    target_directory: PathBuf,
+    disc_parent: Option<PathBuf>,
+    music_item_id: Uuid,
+}
 impl<S: PlanRevisionStore> RevisePlanUseCase<S> {
     pub fn execute(
         &self,
         parent_plan_id: &str,
         changes: &[ManualTargetChange],
-    ) -> Result<String, String> {
+    ) -> WorkflowResult<String> {
         if changes.is_empty() {
             return Err("manual_target_change_required".into());
         }
-        self.store.revise_plan(parent_plan_id, changes)
+        Ok(self.store.revise_plan(parent_plan_id, changes)?)
     }
 }
 
 impl<S: PlanStore> PlanUseCase<S> {
-    pub fn execute(&self, scan_id: &str, options: &PlanOptions) -> Result<PlanResult, String> {
+    pub fn execute(&self, scan_id: &str, options: &PlanOptions) -> WorkflowResult<PlanResult> {
         let issues = crate::validate_naming_rules(&options.naming);
         if !issues.is_empty() {
-            return Err(format!("invalid_naming_rules:{}", issues[0].code));
+            return Err(format!("invalid_naming_rules:{}", issues[0].code).into());
         }
         let started = Instant::now();
         let files = self.store.load_completed_scan(scan_id)?;
         let plan_id = self
             .store
             .begin_plan(scan_id, &options.target_root, &options.naming)?;
-        let mut music_targets = HashMap::<PathBuf, Vec<(PathBuf, Uuid)>>::new();
+        let mut music_targets = HashMap::<PathBuf, Vec<MusicImageAnchor>>::new();
         let mut items: Vec<PlanItem> = files
             .into_iter()
             .enumerate()
@@ -523,13 +624,20 @@ impl<S: PlanStore> PlanUseCase<S> {
                     if let Some(target) = &item.target {
                         let mut source = item.file.path.parent();
                         let target_parent = target.parent().map(Path::to_path_buf);
+                        let disc_parent = target_parent.as_deref().and_then(|directory| {
+                            disc_parent_for_music_item(directory, &item.file, &options.naming)
+                        });
                         while let (Some(directory), Some(target_parent)) =
                             (source, target_parent.as_ref())
                         {
                             music_targets
                                 .entry(directory.to_path_buf())
                                 .or_default()
-                                .push((target_parent.clone(), item.id));
+                                .push(MusicImageAnchor {
+                                    target_directory: target_parent.clone(),
+                                    disc_parent: disc_parent.clone(),
+                                    music_item_id: item.id,
+                                });
                             source = directory.parent();
                         }
                     }
@@ -550,22 +658,7 @@ impl<S: PlanStore> PlanUseCase<S> {
                 }
                 source = directory.parent();
             }
-            candidate_items.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-            candidate_items.dedup();
-            let mut candidates = Vec::<PlanConflictCandidate>::new();
-            for (target_directory, music_item_id) in candidate_items {
-                if let Some(candidate) = candidates
-                    .iter_mut()
-                    .find(|candidate| candidate.target_directory == target_directory)
-                {
-                    candidate.music_item_ids.push(music_item_id);
-                } else {
-                    candidates.push(PlanConflictCandidate {
-                        target_directory,
-                        music_item_ids: vec![music_item_id],
-                    });
-                }
-            }
+            let candidates = image_destination_candidates(candidate_items);
             match candidates.as_slice() {
                 [candidate] => {
                     let parent = candidate.target_directory.clone();
@@ -600,11 +693,19 @@ impl<S: PlanStore> PlanUseCase<S> {
             .count() as u64;
         let risks = items.iter().filter(|item| item.risk != Risk::None).count() as u64;
         for batch in items.chunks(options.batch_size.max(1)) {
-            self.store.save_plan_items(&plan_id, batch)?;
+            if let Err(error) = self.store.save_plan_items(&plan_id, batch) {
+                let _ = self.store.fail_plan(&plan_id);
+                return Err(error.into());
+            }
         }
         let snapshot_hash = plan_snapshot_hash(&items);
-        self.store
-            .finish_plan(&plan_id, conflicts, risks, &snapshot_hash)?;
+        if let Err(error) = self
+            .store
+            .finish_plan(&plan_id, conflicts, risks, &snapshot_hash)
+        {
+            let _ = self.store.fail_plan(&plan_id);
+            return Err(error.into());
+        }
         self.store.record_metric(
             &plan_id,
             "plan",
@@ -618,6 +719,86 @@ impl<S: PlanStore> PlanUseCase<S> {
             risks,
         })
     }
+}
+
+fn disc_parent_for_music_item(
+    target_directory: &Path,
+    file: &ScannedFile,
+    naming: &NamingRules,
+) -> Option<PathBuf> {
+    let metadata = file.metadata.as_ref()?;
+    let source_stem = file
+        .path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("_");
+    let extension = file
+        .path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    let disc_component =
+        render_template(&naming.disc_dir_template, metadata, source_stem, &extension);
+    let disc_component = disc_component.trim_matches([' ', '.']);
+    if disc_component.is_empty() || target_directory.file_name() != Some(OsStr::new(disc_component))
+    {
+        return None;
+    }
+    target_directory.parent().map(Path::to_path_buf)
+}
+
+fn image_destination_candidates(mut anchors: Vec<MusicImageAnchor>) -> Vec<PlanConflictCandidate> {
+    anchors.sort_by(|left, right| {
+        left.target_directory
+            .cmp(&right.target_directory)
+            .then(left.music_item_id.cmp(&right.music_item_id))
+    });
+    anchors.dedup_by(|left, right| {
+        left.target_directory == right.target_directory && left.music_item_id == right.music_item_id
+    });
+
+    let mut candidates = Vec::<PlanConflictCandidate>::new();
+    for anchor in &anchors {
+        if let Some(candidate) = candidates
+            .iter_mut()
+            .find(|candidate| candidate.target_directory == anchor.target_directory)
+        {
+            candidate.music_item_ids.push(anchor.music_item_id);
+        } else {
+            candidates.push(PlanConflictCandidate {
+                target_directory: anchor.target_directory.clone(),
+                music_item_ids: vec![anchor.music_item_id],
+            });
+        }
+    }
+
+    if candidates.len() <= 1 {
+        return candidates;
+    }
+    let Some(common_parent) = anchors
+        .first()
+        .and_then(|anchor| anchor.disc_parent.clone())
+    else {
+        return candidates;
+    };
+    if anchors.iter().any(|anchor| {
+        anchor.disc_parent.as_ref() != Some(&common_parent)
+            || anchor.target_directory.parent() != Some(common_parent.as_path())
+    }) {
+        return candidates;
+    }
+
+    let mut music_item_ids = anchors
+        .into_iter()
+        .map(|anchor| anchor.music_item_id)
+        .collect::<Vec<_>>();
+    music_item_ids.sort();
+    music_item_ids.dedup();
+    vec![PlanConflictCandidate {
+        target_directory: common_parent,
+        music_item_ids,
+    }]
 }
 
 /// Stable digest over the fields which authorize a filesystem mutation.  UUIDs and
@@ -803,7 +984,7 @@ fn resolve_duplicate_targets(items: &mut [PlanItem], naming: &NamingRules) {
         let Some(target) = item.target.clone() else {
             continue;
         };
-        let key = target.to_string_lossy().to_lowercase();
+        let key = windows_path_key(&target);
         let count = seen.entry(key).or_insert(0);
         *count += 1;
         if *count > 1 {
@@ -933,6 +1114,81 @@ mod snapshot_tests {
             ))
         );
     }
+
+    #[test]
+    fn image_candidates_collapse_only_proven_disc_directories() {
+        let album = PathBuf::from("C:/out/Artist/Album");
+        let collapsed = image_destination_candidates(vec![
+            MusicImageAnchor {
+                target_directory: album.join("Disc 01"),
+                disc_parent: Some(album.clone()),
+                music_item_id: Uuid::from_u128(1),
+            },
+            MusicImageAnchor {
+                target_directory: album.join("Disc 02"),
+                disc_parent: Some(album.clone()),
+                music_item_id: Uuid::from_u128(2),
+            },
+        ]);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].target_directory, album);
+        assert_eq!(collapsed[0].music_item_ids.len(), 2);
+
+        let ambiguous = image_destination_candidates(vec![
+            MusicImageAnchor {
+                target_directory: PathBuf::from("C:/out/Artist/Album A/01"),
+                disc_parent: Some(PathBuf::from("C:/out/Artist/Album A")),
+                music_item_id: Uuid::from_u128(1),
+            },
+            MusicImageAnchor {
+                target_directory: PathBuf::from("C:/out/Artist/Album B/01"),
+                disc_parent: Some(PathBuf::from("C:/out/Artist/Album B")),
+                music_item_id: Uuid::from_u128(2),
+            },
+        ]);
+        assert_eq!(ambiguous.len(), 2);
+    }
+
+    #[test]
+    fn disc_parent_requires_a_nonempty_rendered_disc_component() {
+        let file = ScannedFile {
+            id: Uuid::nil(),
+            path: PathBuf::from("C:/in/song.flac"),
+            fingerprint: FileFingerprint {
+                size_bytes: 1,
+                mtime_ns: 1,
+            },
+            metadata: Some(TrackMetadata {
+                artist: Some("Artist".into()),
+                album_artist: Some("Artist".into()),
+                album: Some("Album".into()),
+                title: Some("Song".into()),
+                track_no: Some(1),
+                disc_no: Some(2),
+                year: None,
+            }),
+            kind: FileKind::Music,
+        };
+        let custom = NamingRules {
+            disc_dir_template: "Disc {disc_no:02d}".into(),
+            ..NamingRules::default()
+        };
+        assert_eq!(
+            disc_parent_for_music_item(Path::new("C:/out/Artist/Album/Disc 02"), &file, &custom),
+            Some(PathBuf::from("C:/out/Artist/Album"))
+        );
+        assert_eq!(
+            disc_parent_for_music_item(
+                Path::new("C:/out/Artist/Album"),
+                &file,
+                &NamingRules {
+                    disc_dir_template: String::new(),
+                    ..NamingRules::default()
+                }
+            ),
+            None
+        );
+    }
 }
 
 fn skipped_plan_item(ordinal: u64, file: ScannedFile, risk: Risk, reason: &str) -> PlanItem {
@@ -954,7 +1210,7 @@ fn mark_target_conflicts(items: &mut [PlanItem]) {
     for item in items.iter().filter(|item| item.action == PlanAction::Move) {
         if let Some(target) = &item.target {
             let entry = groups
-                .entry(target.to_string_lossy().to_lowercase())
+                .entry(windows_path_key(target))
                 .or_insert_with(|| (0, Uuid::new_v4()));
             entry.0 += 1;
         }
@@ -962,7 +1218,7 @@ fn mark_target_conflicts(items: &mut [PlanItem]) {
     for item in items.iter_mut() {
         let group = item.target.as_ref().and_then(|target| {
             groups
-                .get(&target.to_string_lossy().to_lowercase())
+                .get(&windows_path_key(target))
                 .filter(|(count, _)| *count > 1)
                 .map(|(_, id)| *id)
         });
@@ -995,11 +1251,20 @@ pub struct VerifyUseCase<S, F> {
     pub files: Arc<F>,
 }
 impl<S: VerifyStore, F: FileMutator> VerifyUseCase<S, F> {
-    pub fn execute(&self, execution_id: &str) -> Result<VerifyResult, String> {
+    pub fn execute(&self, execution_id: &str) -> WorkflowResult<VerifyResult> {
         let started = Instant::now();
         let verify_id = self.store.begin_verify(execution_id)?;
         let (mut success, mut failed) = (0, 0);
-        for item in self.store.load_successful_operations(execution_id)? {
+        let items = match self.store.load_successful_operations(execution_id) {
+            Ok(items) => items,
+            Err(error) => {
+                let _ = self
+                    .store
+                    .finish_verify(&verify_id, RunStatus::Failed, success, failed);
+                return Err(error.into());
+            }
+        };
+        for item in items {
             let expected = item.target.as_ref().is_some_and(|path| {
                 self.files.exists(path)
                     && item
@@ -1008,19 +1273,27 @@ impl<S: VerifyStore, F: FileMutator> VerifyUseCase<S, F> {
             }) && !self.files.exists(&item.source);
             if expected {
                 success += 1;
-                self.store
-                    .save_verify_result(execution_id, &item.operation_id, "success", None)?;
+                self.store.save_verify_result(
+                    execution_id,
+                    &item.operation_id,
+                    OperationResult::Success,
+                    None,
+                )?;
             } else {
                 failed += 1;
                 self.store.save_verify_result(
                     execution_id,
                     &item.operation_id,
-                    "failed",
+                    OperationResult::Failed,
                     Some("expected_move_state_not_found"),
                 )?;
             }
         }
-        let status = if failed == 0 { "completed" } else { "failed" };
+        let status = if failed == 0 {
+            RunStatus::Completed
+        } else {
+            RunStatus::Failed
+        };
         self.store
             .finish_verify(&verify_id, status, success, failed)?;
         self.store.record_metric(
@@ -1037,7 +1310,7 @@ impl<S: VerifyStore, F: FileMutator> VerifyUseCase<S, F> {
     }
 }
 impl<S: ApplyStore, F: FileMutator> ApplyUseCase<S, F> {
-    pub fn execute(&self, plan_id: &str, dry_run: bool) -> Result<ApplyResult, String> {
+    pub fn execute(&self, plan_id: &str, dry_run: bool) -> WorkflowResult<ApplyResult> {
         let started = Instant::now();
         self.store.validate_plan_snapshot(plan_id)?;
         let already_done = if dry_run {
@@ -1047,28 +1320,51 @@ impl<S: ApplyStore, F: FileMutator> ApplyUseCase<S, F> {
         };
         let execution_id = self.store.begin_execution(plan_id, dry_run)?;
         let (mut success, mut skipped, mut failed) = (0, 0, 0);
-        for item in self.store.load_completed_plan(plan_id)? {
+        let items = match self.store.load_completed_plan(plan_id) {
+            Ok(items) => items,
+            Err(error) => {
+                let _ = self.store.finish_execution(
+                    &execution_id,
+                    RunStatus::Failed,
+                    success,
+                    skipped,
+                    failed,
+                );
+                return Err(error.into());
+            }
+        };
+        for item in items {
             let expected_size = self.files.size(&item.source).ok();
             let (action, result, error, source_deleted) =
                 if already_done.iter().any(|id| id == &item.plan_item_id) {
                     skipped += 1;
                     (
-                        "skip".into(),
-                        "skipped".into(),
+                        OperationAction::Skip,
+                        OperationResult::Skipped,
                         Some("already_applied_for_plan".into()),
                         false,
                     )
                 } else if item.action == PlanAction::Skip || item.risk != Risk::None {
                     skipped += 1;
-                    ("skip".into(), "skipped".into(), item.reason.clone(), false)
+                    (
+                        OperationAction::Skip,
+                        OperationResult::Skipped,
+                        item.reason.clone(),
+                        false,
+                    )
                 } else if dry_run {
                     success += 1;
-                    ("dry_run".into(), "success".into(), None, false)
+                    (
+                        OperationAction::DryRun,
+                        OperationResult::Success,
+                        None,
+                        false,
+                    )
                 } else if item.target.is_none() || !self.files.exists(&item.source) {
                     failed += 1;
                     (
-                        "move".into(),
-                        "failed".into(),
+                        OperationAction::Move,
+                        OperationResult::Failed,
                         Some("source_or_target_missing".into()),
                         false,
                     )
@@ -1077,23 +1373,37 @@ impl<S: ApplyStore, F: FileMutator> ApplyUseCase<S, F> {
                         Some(target) => target,
                         None => unreachable!("target checked above"),
                     };
+                    let same_volume = self.files.same_volume(&item.source, target);
                     if self.files.exists(target) {
                         skipped += 1;
                         (
-                            "skip".into(),
-                            "skipped".into(),
+                            OperationAction::Skip,
+                            OperationResult::Skipped,
                             Some("target_already_exists".into()),
                             false,
                         )
-                    } else if self.files.same_volume(&item.source, target)? {
+                    } else if let Err(error) = same_volume.as_ref() {
+                        failed += 1;
+                        (
+                            OperationAction::Move,
+                            OperationResult::Failed,
+                            Some(error.clone()),
+                            false,
+                        )
+                    } else if same_volume == Ok(true) {
                         match self.files.move_file(&item.source, target) {
                             Ok(()) => {
                                 success += 1;
-                                ("move".into(), "success".into(), None, true)
+                                (OperationAction::Move, OperationResult::Success, None, true)
                             }
                             Err(e) => {
                                 failed += 1;
-                                ("move".into(), "failed".into(), Some(e), false)
+                                (
+                                    OperationAction::Move,
+                                    OperationResult::Failed,
+                                    Some(e),
+                                    false,
+                                )
                             }
                         }
                     } else {
@@ -1107,21 +1417,36 @@ impl<S: ApplyStore, F: FileMutator> ApplyUseCase<S, F> {
                             Ok(()) => match self.files.delete_file(&item.source) {
                                 Ok(()) => {
                                     success += 1;
-                                    ("copy_delete".into(), "success".into(), None, true)
+                                    (
+                                        OperationAction::CopyDelete,
+                                        OperationResult::Success,
+                                        None,
+                                        true,
+                                    )
                                 }
                                 Err(error) => {
                                     failed += 1;
-                                    ("copy".into(), "failed".into(), Some(error), false)
+                                    (
+                                        OperationAction::CopySourceRetained,
+                                        OperationResult::Failed,
+                                        Some(error),
+                                        false,
+                                    )
                                 }
                             },
                             Err(error) => {
                                 failed += 1;
-                                ("copy".into(), "failed".into(), Some(error), false)
+                                (
+                                    OperationAction::CopySourceRetained,
+                                    OperationResult::Failed,
+                                    Some(error),
+                                    false,
+                                )
                             }
                         }
                     }
                 };
-            self.store.save_operation(
+            if let Err(save_error) = self.store.save_operation(
                 &execution_id,
                 &OperationLog {
                     plan_item_id: item.plan_item_id,
@@ -1134,9 +1459,22 @@ impl<S: ApplyStore, F: FileMutator> ApplyUseCase<S, F> {
                     source_deleted,
                     expected_size,
                 },
-            )?;
+            ) {
+                let _ = self.store.finish_execution(
+                    &execution_id,
+                    RunStatus::Partial,
+                    success,
+                    skipped,
+                    failed + 1,
+                );
+                return Err(save_error.into());
+            }
         }
-        let status = if failed == 0 { "completed" } else { "partial" };
+        let status = if failed == 0 {
+            RunStatus::Completed
+        } else {
+            RunStatus::Partial
+        };
         self.store
             .finish_execution(&execution_id, status, success, skipped, failed)?;
         self.store.record_metric(
@@ -1217,7 +1555,14 @@ mod safety_workflow_tests {
         fn save_operation(&self, _: &str, _: &OperationLog) -> Result<(), String> {
             Ok(())
         }
-        fn finish_execution(&self, _: &str, _: &str, _: u64, _: u64, _: u64) -> Result<(), String> {
+        fn finish_execution(
+            &self,
+            _: &str,
+            _: RunStatus,
+            _: u64,
+            _: u64,
+            _: u64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -1250,8 +1595,8 @@ mod safety_workflow_tests {
                     sequence_no: n,
                     source: format!("source{n}").into(),
                     target: Some(format!("target{n}").into()),
-                    action: "move".into(),
-                    expected_size: Some(10),
+                    action: OperationAction::Move,
+                    expected_size: None,
                 })
                 .collect())
         }
@@ -1259,13 +1604,20 @@ mod safety_workflow_tests {
             &self,
             _: &str,
             operation_id: &str,
-            _: &str,
+            _: OperationResult,
             _: Option<&str>,
         ) -> Result<(), String> {
             self.saved.lock().unwrap().push(operation_id.into());
             Ok(())
         }
-        fn finish_rollback(&self, _: &str, _: &str, _: u64, _: u64, _: u64) -> Result<(), String> {
+        fn finish_rollback(
+            &self,
+            _: &str,
+            _: RunStatus,
+            _: u64,
+            _: u64,
+            _: u64,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -1283,5 +1635,84 @@ mod safety_workflow_tests {
         .execute("execution", true)
         .unwrap();
         assert_eq!(*store.saved.lock().unwrap(), ["3", "2", "1"]);
+    }
+
+    struct MismatchRollbackStore;
+    impl RollbackStore for MismatchRollbackStore {
+        fn begin_rollback(&self, _: &str, _: bool) -> Result<String, String> {
+            Ok("rollback".into())
+        }
+        fn load_rollback_items(&self, _: &str) -> Result<Vec<crate::VerifyItem>, String> {
+            Ok(vec![crate::VerifyItem {
+                operation_id: "operation".into(),
+                sequence_no: 1,
+                source: "source".into(),
+                target: Some("target".into()),
+                action: OperationAction::Move,
+                expected_size: Some(10),
+            }])
+        }
+        fn save_rollback_result(
+            &self,
+            _: &str,
+            _: &str,
+            result: OperationResult,
+            error: Option<&str>,
+        ) -> Result<(), String> {
+            assert_eq!(result, OperationResult::Failed);
+            assert_eq!(error, Some("target_changed_since_apply"));
+            Ok(())
+        }
+        fn finish_rollback(
+            &self,
+            _: &str,
+            _: RunStatus,
+            _: u64,
+            _: u64,
+            _: u64,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MismatchFiles {
+        mutations: Mutex<Vec<String>>,
+    }
+    impl FileMutator for MismatchFiles {
+        fn exists(&self, path: &Path) -> bool {
+            path == Path::new("target")
+        }
+        fn same_volume(&self, _: &Path, _: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn move_file(&self, _: &Path, _: &Path) -> Result<(), String> {
+            self.mutations.lock().unwrap().push("move".into());
+            Ok(())
+        }
+        fn copy_file(&self, _: &Path, _: &Path) -> Result<(), String> {
+            self.mutations.lock().unwrap().push("copy".into());
+            Ok(())
+        }
+        fn size(&self, _: &Path) -> Result<u64, String> {
+            Ok(9)
+        }
+        fn delete_file(&self, _: &Path) -> Result<(), String> {
+            self.mutations.lock().unwrap().push("delete".into());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rollback_does_not_mutate_a_target_that_changed_after_apply() {
+        let files = Arc::new(MismatchFiles::default());
+        let result = RollbackUseCase {
+            store: Arc::new(MismatchRollbackStore),
+            files: Arc::clone(&files),
+        }
+        .execute("execution", false)
+        .unwrap();
+        assert_eq!(result.failed, 1);
+        assert!(files.mutations.lock().unwrap().is_empty());
     }
 }

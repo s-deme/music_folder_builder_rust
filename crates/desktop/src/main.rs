@@ -37,13 +37,6 @@ struct ScanStatus {
 }
 
 #[derive(Serialize)]
-struct ScanResponse {
-    scan_id: String,
-    files: u64,
-    cache_hits: u64,
-    warnings: u64,
-}
-#[derive(Serialize)]
 struct WorkflowResponse {
     id: String,
     success: u64,
@@ -66,57 +59,6 @@ fn desktop_database_path(app: tauri::AppHandle) -> Result<String, String> {
         .join("music-folder.db")
         .to_string_lossy()
         .into_owned())
-}
-#[tauri::command]
-fn scan_library(
-    app: tauri::AppHandle,
-    registry: tauri::State<'_, ScanRegistry>,
-    source: String,
-    database: String,
-    workers: Option<usize>,
-) -> Result<ScanResponse, String> {
-    let mut options = ScanOptions::default();
-    if let Some(value) = workers {
-        options.workers = value.max(1);
-    }
-    let token = CancellationToken::default();
-    let registry_value = registry.inner().clone();
-    let token_for_progress = token.clone();
-    options.cancellation = token;
-    options.progress = Some(Arc::new(move |progress: ScanProgress| {
-        if let Ok(mut scans) = registry_value.0.lock() {
-            scans
-                .entry(progress.scan_id.clone())
-                .or_insert_with(|| ScanState {
-                    token: token_for_progress.clone(),
-                    status: ScanStatus {
-                        request_id: progress.scan_id.clone(),
-                        status: "running".into(),
-                        scan_id: Some(progress.scan_id.clone()),
-                        files: progress.processed,
-                        cache_hits: progress.cache_hits,
-                        warnings: progress.warnings,
-                        error: None,
-                    },
-                });
-        }
-        let _ = app.emit("scan-progress", progress);
-    }));
-    let usecase = ScanUseCase {
-        fs: Arc::new(LocalFileSystem),
-        metadata: Arc::new(LoftyMetadataReader),
-        store: Arc::new(SqliteScanStore::open(&PathBuf::from(database))?),
-    };
-    let result = usecase.execute(&PathBuf::from(source), &options)?;
-    if let Ok(mut scans) = registry.0.lock() {
-        scans.remove(&result.scan_id);
-    }
-    Ok(ScanResponse {
-        scan_id: result.scan_id,
-        files: result.files,
-        cache_hits: result.cache_hits,
-        warnings: result.warnings,
-    })
 }
 
 #[tauri::command]
@@ -184,6 +126,7 @@ fn start_scan(
                 store: Arc::new(store),
             }
             .execute(&PathBuf::from(source), &options)
+            .map_err(|error| error.to_string())
         });
         let mut status = match result {
             Ok(result) => ScanStatus {
@@ -271,7 +214,8 @@ fn create_plan(
             batch_size: 250,
             naming: naming.unwrap_or_default(),
         },
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     Ok(WorkflowResponse {
         id: result.plan_id,
         success: result.items,
@@ -311,7 +255,8 @@ fn revise_plan_target(
             target: PathBuf::from(target),
             reason: "manual_target".into(),
         }],
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     Ok(WorkflowResponse {
         id,
         success: 0,
@@ -329,7 +274,8 @@ fn apply_plan(
         store: store(&database)?,
         files: Arc::new(LocalFileSystem),
     }
-    .execute(&plan_id, !execute)?;
+    .execute(&plan_id, !execute)
+    .map_err(|error| error.to_string())?;
     Ok(WorkflowResponse {
         id: result.execution_id,
         success: result.success,
@@ -343,7 +289,8 @@ fn verify_execution(execution_id: String, database: String) -> Result<WorkflowRe
         store: store(&database)?,
         files: Arc::new(LocalFileSystem),
     }
-    .execute(&execution_id)?;
+    .execute(&execution_id)
+    .map_err(|error| error.to_string())?;
     Ok(WorkflowResponse {
         id: result.verify_id,
         success: result.success,
@@ -361,7 +308,8 @@ fn rollback_execution(
         store: store(&database)?,
         files: Arc::new(LocalFileSystem),
     }
-    .execute(&execution_id, !execute)?;
+    .execute(&execution_id, !execute)
+    .map_err(|error| error.to_string())?;
     Ok(WorkflowResponse {
         id: result.rollback_id,
         success: result.success,
@@ -459,7 +407,6 @@ fn main() {
         .manage(ScanRegistry::default())
         .invoke_handler(tauri::generate_handler![
             desktop_database_path,
-            scan_library,
             start_scan,
             scan_status,
             cancel_scan,

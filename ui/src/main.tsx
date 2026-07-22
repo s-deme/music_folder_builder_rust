@@ -3,107 +3,16 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { actionLabels, CleanupPreview, defaultNaming, emptyPlanCounts, formatReason, History, joinPath, loadNaming, Log, Metric, NamingField, NamingPreview, NamingRules, PlanConflictDetail, PlanItem, PlanItemCounts, PlanItemPage, presets, Progress, riskLabels, RunDetail, Scan, ScanStatus, sourceFileName, tokens, Workflow } from "./model";
+import { ExistingTargetConflict, PlanConflictCard } from "./conflicts";
 import "./styles.css";
 import "./naming.css";
 
-type Scan = { scan_id: string; files: number; cache_hits: number; warnings: number };
-type ScanStatus = { request_id: string; status: string; scan_id?: string; files: number; cache_hits: number; warnings: number; error?: string };
-type Progress = { scan_id: string; phase: string; enumerated: number; processed: number; cache_hits: number; warnings: number; elapsed_ms: number; items_per_second: number; eta_seconds?: number };
-type Workflow = { id: string; success: number; skipped: number; failed: number };
-type History = { id: string; kind: string; mode?: string; status: string; started_at: number; finished_at?: number; parent_id?: string; root_scan_id: string; success: number; skipped: number; failed: number };
-type RunDetail = { id: string; kind: string; status: string; parent_id?: string; success: number; skipped: number; failed: number };
-type PlanItem = { id: string; conflict_group_id?: string; conflict_member_count: number; ordinal: number; source_path: string; target_path?: string; action: string; risk: string; reason?: string };
-type PlanItemCounts = { moves: number; skips: number; needs_attention: number; conflicts: number; invalid_target: number; metadata_missing: number; path_too_long: number };
-type PlanItemPage = { items: PlanItem[]; total: number; filtered_total: number; next_cursor: number | null; counts: PlanItemCounts };
-type ConflictMember = { item_id: string; ordinal: number; source_path: string };
-type PlanConflictDetail = { id: string; kind: string; target_path: string; existing_target_path?: string; members: ConflictMember[]; candidates: { target_path: string; members: ConflictMember[] }[] };
-type Log = { id: string; execution_id: string; sequence_no: number; source_path: string; target_path?: string; action: string; result: string; error?: string; created_at: number };
-type Metric = { phase: string; elapsed_ms: number; item_count: number };
-type DuplicateStrategy = "skip" | "sequence" | "template";
-type NamingRules = { artist_dir_template: string; album_dir_template: string; disc_dir_template: string; filename_template: string; duplicate_suffix_template: string; use_source_filename: boolean; use_source_image_filename: boolean; allow_missing_metadata: boolean; duplicate_strategy: DuplicateStrategy };
-type NamingField = "artist_dir_template" | "album_dir_template" | "disc_dir_template" | "filename_template" | "duplicate_suffix_template";
-type NamingPreview = { relative_path: string; issues: { field: string; code: string; message: string }[] };
-type CleanupPreview = { plans: number; executions: number; logs: number; blocked: boolean };
-const defaultNaming: NamingRules = { artist_dir_template: "{album_artist}", album_dir_template: "{album}", disc_dir_template: "[{disc_no:02d}]", filename_template: "[{track_no:02d}_]{title}{extension}", duplicate_suffix_template: "_{disc_no:02d}", use_source_filename: false, use_source_image_filename: false, allow_missing_metadata: false, duplicate_strategy: "skip" };
-const presets: Record<string, NamingRules> = { standard: defaultNaming, flatDisc: { ...defaultNaming, disc_dir_template: "" }, withYear: { ...defaultNaming, album_dir_template: "[{year} - ]{album}" }, source: { ...defaultNaming, use_source_filename: true, use_source_image_filename: true } };
-const tokens = ["{album_artist}", "{artist}", "{album}", "{title}", "{track_no:02d}", "{disc_no:02d}", "{year}", "{source_stem}", "{extension}"];
-const emptyPlanCounts: PlanItemCounts = { moves: 0, skips: 0, needs_attention: 0, conflicts: 0, invalid_target: 0, metadata_missing: 0, path_too_long: 0 };
-const riskLabels: Record<string, string> = { none: "問題なし", conflict: "衝突", invalid_target: "無効な移動先", metadata_missing: "メタデータ不足", path_too_long: "長いパス" };
-const actionLabels: Record<string, string> = { move: "移動", skip: "スキップ" };
-const reasonLabels: Record<string, string> = {
-  empty_path: "移動先のパスが空です",
-  metadata_missing: "メタデータを読み取れません",
-  artist_missing: "アーティスト情報がありません",
-  album_missing: "アルバム情報がありません",
-  artist_album_missing: "アーティスト情報とアルバム情報がありません",
-  source_equals_target: "移動元と移動先が同じです",
-  target_conflict: "同じ移動先になるファイルがあります",
-  companion_without_music: "対応する音楽ファイルがありません",
-  companion_target_ambiguous: "画像の移動先を一意に決められません",
-  image_pending_anchor: "画像に対応する音楽ファイルを確認しています",
-  manual_target: "移動先が手動で変更されました",
-  already_applied_for_plan: "この整理計画はすでに実行済みです",
-  source_or_target_missing: "移動元または移動先がありません",
-  target_already_exists: "移動先にファイルがすでに存在します",
-  target_missing_in_log: "実行ログに移動先がありません",
-  target_missing: "移動先がありません",
-  source_already_exists: "移動元にファイルがすでに存在します",
-  reverse_target_delete_failed: "巻き戻し時に移動先を削除できませんでした",
-};
-export function formatReason(reason: string): string {
-  const [code, actual, limit] = reason.split(":");
-  if (code === "path_too_long" && actual && limit) return `パス全体が長すぎます: ${actual}文字（上限${limit}文字）`;
-  if (code === "component_too_long" && actual && limit) return `フォルダ名またはファイル名が長すぎます: ${actual}文字（上限${limit}文字）`;
-  if (reasonLabels[reason]) return reasonLabels[reason];
-  return /^[a-z][a-z0-9_]*(?::\d+)*$/.test(reason) ? "詳細不明の理由があります" : reason;
-}
 const historyKindLabels: Record<string, string> = { scan: "スキャン", plan: "整理計画", apply: "実行", verify: "検証", rollback: "ロールバック" };
 const historyStatusLabels: Record<string, string> = { running: "実行中", completed: "完了", failed: "失敗", cancelled: "取消済み" };
 function historyKind(value: History) { if (value.kind === "apply" && value.mode === "dry_run") return "Dry-run"; if (value.kind === "apply" && value.mode === "apply") return "本実行"; if (value.kind === "rollback" && value.mode === "dry_run") return "Rollback dry-run"; return historyKindLabels[value.kind] ?? value.kind; }
 function formatTime(value?: number) { return value === undefined || value === null ? "—" : new Intl.DateTimeFormat("ja-JP", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value * 1000)); }
 function formatDuration(value: History) { if (!value.finished_at) return value.status === "running" ? "実行中" : "—"; const seconds = Math.max(0, value.finished_at - value.started_at); return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`; }
-function sourceFileName(path: string) { return path.split(/[\\/]/).at(-1) ?? "image"; }
-function joinPath(directory: string, filename: string) { return `${directory.replace(/[\\/]$/, "")}\\${filename}`; }
-function loadNaming(): NamingRules { try { return { ...defaultNaming, ...JSON.parse(localStorage.getItem("mfb.naming") ?? "{}") as Partial<NamingRules> }; } catch { return defaultNaming; } }
-
-function DiagnosticPath({ label, path }: { label: string; path?: string }) {
-  return <div className="diagnostic-path"><span>{label}</span><div><strong>{path ? sourceFileName(path) : "—"}</strong>{path && <code title={path}>{path}</code>}</div>{path && <button className="secondary compact" type="button" onClick={() => void navigator.clipboard.writeText(path)}>コピー</button>}</div>;
-}
-
-function PlanConflictCard({ database, planId, item }: { database: string; planId: string; item: PlanItem }) {
-  const [detail, setDetail] = useState<PlanConflictDetail>();
-  const [loadError, setLoadError] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const load = async () => {
-    if (!item.conflict_group_id) return;
-    setLoadError(false);
-    try { setDetail(await invoke<PlanConflictDetail>("get_plan_conflict_detail", { database, planId, conflictGroupId: item.conflict_group_id })); }
-    catch { setLoadError(true); }
-  };
-  useEffect(() => { void load(); }, [database, planId, item.conflict_group_id]);
-  const others = detail?.members.filter(member => member.item_id !== item.id) ?? [];
-  const visible = expanded ? others : others.slice(0, 1);
-  return <div className="conflict-diagnostic" aria-label="ファイル衝突の詳細">
-    <strong>ファイルの衝突</strong>
-    <DiagnosticPath label="対象ファイル" path={item.source_path} />
-    {detail && <>
-      {visible.map((member, index) => <DiagnosticPath key={member.item_id} label={index === 0 ? "衝突相手" : "ほかの相手"} path={member.source_path} />)}
-      <DiagnosticPath label="共通の移動先" path={detail.target_path} />
-      {others.length > 1 && <button className="secondary compact" type="button" onClick={() => setExpanded(value => !value)}>{expanded ? "相手を1件だけ表示" : `ほか${others.length - 1}件を表示（全${others.length}件）`}</button>}
-    </>}
-    {!detail && !loadError && <span className="diagnostic-status">衝突相手を読み込んでいます…</span>}
-    {loadError && <div className="diagnostic-status error">衝突相手を読み込めませんでした。<button className="secondary compact" type="button" onClick={() => void load()}>再試行</button></div>}
-  </div>;
-}
-
-function ExistingTargetConflict({ log }: { log: Log }) {
-  return <div className="conflict-diagnostic log-conflict" aria-label="既存ファイルとの衝突">
-    <strong>既存ファイルとの衝突</strong>
-    <DiagnosticPath label="対象ファイル" path={log.source_path} />
-    <DiagnosticPath label="衝突相手" path={log.target_path} />
-    <DiagnosticPath label="共通の移動先" path={log.target_path} />
-  </div>;
-}
 
 function NamingEditor({ naming, setNaming, preset, setPreset, preview }: { naming: NamingRules; setNaming: (value: NamingRules) => void; preset: string; setPreset: (value: string) => void; preview?: NamingPreview }) {
   const [field, setField] = useState<NamingField>("filename_template"); const [token, setToken] = useState(tokens[0]);

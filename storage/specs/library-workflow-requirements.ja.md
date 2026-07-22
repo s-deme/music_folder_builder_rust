@@ -20,6 +20,12 @@ WHEN dry-run を要求された場合、THEN システム SHALL move/copy/delete
 
 IF target が存在する、path risk/conflict がある、または検証に失敗する場合、THEN システム SHALL 当該 item を skip/failed として記録し、唯一の既知コピーを削除しない。
 
+### REQ-SAF-005: 操作の中間状態と終端化
+
+WHEN apply の filesystem mutation が一部だけ成功した場合、THEN システム SHALL copy済み・source未削除などの中間状態を型付けしたitem結果として順序付きで保存し、再実行・verify・rollbackが実際の状態を判定できるようにする。
+
+IF scan、plan、apply、verify、rollback の開始後に処理、永続化、またはworkerが失敗した場合、THEN システム SHALL runを `failed` または実績に応じた `partial` の終端状態に更新し、`running` のまま残してはならない。
+
 ### REQ-SCN-001: 高速かつ有界な scan
 
 WHEN scan が source root を走査する場合、THEN システム SHALL 列挙、上限付き並列タグ読取、単一 SQLite writer、進捗通知の pipeline で処理し、キュー容量を設定可能にする。
@@ -92,7 +98,9 @@ IF metadata不足時に生成したtargetが既存target、重複target、source
 
 WHEN scan が音楽ファイルと同じ source tree 内の対応画像を検出した場合、THEN システム SHALL 画像を scan snapshot に保存し、plan で対応する音楽の target directory へ移動予定を作成する。対応先がない、または一意に決定できない画像は skip と理由を記録する。
 
-IF 画像の移動先候補が複数ある場合、THEN システム SHALL 候補となる全target directoryと根拠となる音楽itemをPlan診断として保存し、移動先を空欄ではなく「未決定（候補N件）」と表示して候補を確認可能にする。
+IF 画像の移動先候補が複数であり、すべての候補が命名規則から生成された同一album directory直下のdisc directoryである場合、THEN システム SHALL 画像の移動先を当該album directoryとして一意に決定する。sourceのdisc directory内に画像があり、最も近い対応音楽が単一discだけに属する場合は、当該disc directoryを移動先とする。
+
+IF disc directoryの正規化後も画像の移動先候補が複数ある場合、THEN システム SHALL 候補となる全target directoryと根拠となる音楽itemをPlan診断として保存し、移動先を空欄ではなく「未決定（候補N件）」と表示して候補を確認可能にする。
 
 WHEN 利用者が画像の移動先候補を選択する場合、THEN システム SHALL 元Planを変更せず、選択したdirectoryと画像ファイル名からtargetを作るimmutableな改訂Planを生成し、通常のpath policyと衝突検査を適用する。
 
@@ -111,6 +119,14 @@ WHEN apply または rollback 後に verify を実行する場合、THEN シス�
 ### REQ-RBK-001: 巻き戻し
 
 WHEN rollback を開始する場合、THEN システム SHALL 成功した execution log のみを逆 sequence で処理する。異ボリュームでは `copy -> verify -> target delete` を用いる。
+
+IF rollback対象のtargetがapply時に記録したsizeまたは利用可能なfingerprintと一致しない場合、THEN システム SHALL 当該itemをfailedとして記録し、sourceへの復元、targetの削除、上書きを行わない。
+
+### REQ-ERR-001: 安定した内部契約
+
+WHEN Core、adapter、UIがrun状態、操作結果、理由、またはエラーを受け渡す場合、THEN システム SHALL Coreでは型付けした値を使用し、SQLite・CLI・Tauri境界だけで安定した文字列表現へ変換する。
+
+IF metadata cacheの読出しとmetadata解析が失敗した場合、THEN システム SHALL cache障害、解析不能、metadata不足を区別し、永続化障害をmetadata不足として握り潰してはならない。
 
 ### REQ-OBS-001: 永続化と計測
 

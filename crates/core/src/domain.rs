@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::execution::{OperationAction, OperationResult};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunStatus {
     Running,
@@ -396,8 +398,8 @@ pub struct OperationLog {
     pub sequence_no: u64,
     pub source: PathBuf,
     pub target: Option<PathBuf>,
-    pub action: String,
-    pub result: String,
+    pub action: OperationAction,
+    pub result: OperationResult,
     pub error: Option<String>,
     pub source_deleted: bool,
     pub expected_size: Option<u64>,
@@ -409,7 +411,7 @@ pub struct VerifyItem {
     pub sequence_no: u64,
     pub source: PathBuf,
     pub target: Option<PathBuf>,
-    pub action: String,
+    pub action: OperationAction,
     pub expected_size: Option<u64>,
 }
 

@@ -24,6 +24,14 @@ Desktop の状態 DB は Tauri の `app_local_data_dir` 配下の `music-folder.
 
 apply の実装順序は `plan item検証 -> target存在確認 -> 同一volume rename | 異volume copy -> size検証 -> source delete -> operation log commit` とする。dry-runは同じ事前条件評価とlog保存を行うが、filesystem mutationを呼ばない。
 
+Coreの各workflowは `execute_inner` とrun lifecycle終端処理を分離し、開始済みrunを成功時は `completed`、item失敗を含む場合は `partial`、処理・永続化・worker失敗時は `failed` へ必ず更新する。filesystem操作は `OperationOutcome` により、mutation前失敗、move成功、copy後source削除成功、copy済みsource残存、skipを区別する。copy後のsource削除失敗はtargetが残る中間状態として監査し、通常の成功操作と同一視しない。
+
+rollbackはoperation logの実績を入力とし、逆操作前にtargetの存在、sourceの不存在、expected sizeを検証する。不一致時は外部変更の可能性があるためmutationを行わない。run status、action、result、reason/errorはCore enumを正とし、SQLite/Tauri/CLI adapterだけが安定codeとの変換を担当する。
+
+Coreは `domain/{naming,path,plan,execution}` と `usecases/{scan,plan,apply,verify,rollback}` に分割する。infraのSQLite adapterはmigration、scan、plan、execution、history repositoryに分割し、各migrationをtransactionで適用する。Desktop backendはscan orchestrationを一つのserviceへ集約し、React UIはworkflow、plan、execution log、historyのcomponent/hookへ分割する。
+
+Windows上のtarget比較は共通の `WindowsPathKey` を使用する。lossyな表示文字列を判定根拠にせず、separator、case、末尾空白・ピリオドを同一の規則で正規化し、Plan conflictとSQLiteのnormalized targetで共有する。
+
 ## 命名・asset・plan revision
 
 Plan は naming rules snapshot（artist/album/disc/filename/duplicate suffix、元音楽・画像ファイル名の保持設定）を保存する。テンプレート展開は Core の純粋関数とし、数値書式と `[{field}]` 形式の条件ブロックを解釈してから component sanitization を行う。音楽 target の重複は suffix template を item 固有値で展開し、なお重複する場合は安定した連番を追加する。それでも既存 target または path risk があれば skip する。
@@ -42,9 +50,11 @@ path policy は既定でtarget path全体を240文字まで許可する。compon
 
 Plan reasonと命名validation issueは永続化・判定用の安定した内部codeを維持し、表示adapterで全codeを日本語へ変換する。既知codeは具体的な日本語文言とし、未知codeは「詳細不明の理由があります」のような日本語fallbackに、調査・copy用の補助情報を分離して提示する。内部codeそのものを主たる利用者向け理由として表示しない。
 
-scan は音楽と画像 asset を区別して snapshot に保存する。Plan は音楽 item が決定した source-directory-to-target-directory 対応を根拠に jpg/jpeg/png/webp/gif/bmp を対応付ける。画像は対応音楽がない・複数 target に曖昧に対応する場合に skip とし、source image filename を保持する設定では同一 directory 内で `_2` 以降の連番を付ける。
+scan は音楽と画像 asset を区別して snapshot に保存する。Plan は音楽 item が決定した source-directory-to-target-directory 対応を根拠に jpg/jpeg/png/webp/gif/bmp を対応付ける。対応付けは画像から最も近い音楽を含むsource祖先を使用し、sourceのdisc directory内にある画像はそのdiscだけへ対応させる。画像は対応音楽がない・複数 target に曖昧に対応する場合に skip とし、source image filename を保持する設定では同一 directory 内で `_2` 以降の連番を付ける。
 
-画像の対応先が複数ある場合は、画像itemに `image_destination` conflict groupを割り当て、候補target directoryごとに根拠となる音楽Plan item IDを保存する。Plan pageは候補数を返し、既存のconflict detail APIは種類に応じて候補directoryと音楽itemのordinal/source pathを返す。候補選択は画像ファイル名をcandidate directoryへ結合して既存のPlan revisionへ渡し、親Planを変更しない。
+複数の画像target候補がすべて同一album directory直下のdisc directoryである場合は、album directoryを画像targetとして自動選択する。disc directoryかどうかはpath名の形式や単なる共通祖先では判定せず、各音楽itemについて命名規則の `disc_dir_template` が空でないdirectory componentを実際に生成したことをPlan作成中の一時的なanchor情報として保持して判定する。候補の一部にdisc directoryの生成根拠がない場合、または直接の親が異なる場合は正規化しない。この一時情報は永続domain・SQLite schemaへ追加しない。
+
+disc directoryの正規化後も画像の対応先が複数ある場合は、画像itemに `image_destination` conflict groupを割り当て、候補target directoryごとに根拠となる音楽Plan item IDを保存する。Plan pageは候補数を返し、既存のconflict detail APIは種類に応じて候補directoryと音楽itemのordinal/source pathを返す。候補選択は画像ファイル名をcandidate directoryへ結合して既存のPlan revisionへ渡し、親Planを変更しない。
 
 手動 target 指定は completed plan の item を更新しない。Core の `RevisePlanUseCase` が親 plan と変更集合を読み、新 plan と全 item snapshot/hash を生成する。apply は従来どおり新 plan の保存済み item のみを入力とする。
 

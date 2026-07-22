@@ -4,8 +4,8 @@ use music_folder_core::{
         ApplyStore, ManualTargetChange, PlanRevisionStore, PlanStore, RollbackStore, ScanStore,
         VerifyStore,
     },
-    ApplyItem, FileFingerprint, FileKind, OperationLog, PlanAction, PlanItem, Risk, ScannedFile,
-    TrackMetadata, VerifyItem,
+    windows_path_key, ApplyItem, FileFingerprint, FileKind, OperationAction, OperationLog,
+    OperationResult, PlanAction, PlanItem, Risk, RunStatus, ScannedFile, TrackMetadata, VerifyItem,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -16,112 +16,16 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Debug, serde::Serialize)]
-pub struct HistoryRow {
-    pub id: String,
-    pub kind: String,
-    pub mode: Option<String>,
-    pub status: String,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    pub parent_id: Option<String>,
-    pub root_scan_id: String,
-    pub success: u64,
-    pub skipped: u64,
-    pub failed: u64,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct RunDetailRow {
-    pub id: String,
-    pub kind: String,
-    pub status: String,
-    pub parent_id: Option<String>,
-    pub success: u64,
-    pub skipped: u64,
-    pub failed: u64,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct PlanItemRow {
-    pub id: String,
-    pub conflict_group_id: Option<String>,
-    pub conflict_member_count: u64,
-    pub ordinal: u64,
-    pub source_path: String,
-    pub target_path: Option<String>,
-    pub action: String,
-    pub risk: String,
-    pub reason: Option<String>,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct PlanConflictMemberRow {
-    pub item_id: String,
-    pub ordinal: u64,
-    pub source_path: String,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct PlanConflictDetail {
-    pub id: String,
-    pub kind: String,
-    pub target_path: String,
-    pub existing_target_path: Option<String>,
-    pub members: Vec<PlanConflictMemberRow>,
-    pub candidates: Vec<PlanConflictCandidateRow>,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct PlanConflictCandidateRow {
-    pub target_path: String,
-    pub members: Vec<PlanConflictMemberRow>,
-}
-#[derive(Debug, Default, serde::Serialize)]
-pub struct PlanItemCounts {
-    pub moves: u64,
-    pub skips: u64,
-    pub needs_attention: u64,
-    pub conflicts: u64,
-    pub invalid_target: u64,
-    pub metadata_missing: u64,
-    pub path_too_long: u64,
-}
-#[derive(Debug, serde::Serialize)]
-pub struct PlanItemPage {
-    pub items: Vec<PlanItemRow>,
-    pub total: u64,
-    pub filtered_total: u64,
-    pub next_cursor: Option<u64>,
-    pub counts: PlanItemCounts,
-}
-#[derive(serde::Serialize)]
-pub struct OperationLogRow {
-    pub id: String,
-    pub execution_id: String,
-    pub sequence_no: u64,
-    pub source_path: String,
-    pub target_path: Option<String>,
-    pub action: String,
-    pub result: String,
-    pub error: Option<String>,
-    pub created_at: i64,
-}
-#[derive(serde::Serialize)]
-pub struct MetricRow {
-    pub phase: String,
-    pub elapsed_ms: u64,
-    pub item_count: u64,
-}
-#[derive(serde::Serialize)]
-pub struct HistoryCleanupPreview {
-    pub plans: u64,
-    pub executions: u64,
-    pub logs: u64,
-    pub blocked: bool,
-}
+mod rows;
+pub use rows::*;
+mod migrations;
 
 pub struct SqliteScanStore {
     connection: Mutex<Connection>,
 }
 impl SqliteScanStore {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let connection = Connection::open(path).map_err(|e| e.to_string())?;
+        let mut connection = Connection::open(path).map_err(|e| e.to_string())?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
           CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY, source_root TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, warning_count INTEGER NOT NULL DEFAULT 0);
@@ -145,97 +49,7 @@ impl SqliteScanStore {
           CREATE INDEX IF NOT EXISTS idx_plan_items_plan ON plan_items(plan_id, ordinal);
           CREATE INDEX IF NOT EXISTS idx_plan_conflict_groups_plan_target ON plan_conflict_groups(plan_id, normalized_target_path);
           CREATE INDEX IF NOT EXISTS idx_operation_logs_execution ON operation_logs(execution_id, sequence_no);") .map_err(|e| e.to_string())?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?1)",
-                params![now()],
-            )
-            .map_err(|e| e.to_string())?;
-        // Upgrade databases made by versions before snapshot hashes existed.
-        let has_snapshot = connection
-            .prepare("PRAGMA table_info(plan_runs)")
-            .and_then(|mut s| {
-                s.query_map([], |r| r.get::<_, String>(1))?
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|name| name == "snapshot_hash");
-        if !has_snapshot {
-            connection
-                .execute_batch("ALTER TABLE plan_runs ADD COLUMN snapshot_hash TEXT;")
-                .map_err(|e| e.to_string())?;
-        }
-        let has_expected_size = connection
-            .prepare("PRAGMA table_info(operation_logs)")
-            .and_then(|mut statement| {
-                statement
-                    .query_map([], |row| row.get::<_, String>(1))?
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|error| error.to_string())?
-            .iter()
-            .any(|name| name == "expected_size");
-        if !has_expected_size {
-            connection
-                .execute_batch("ALTER TABLE operation_logs ADD COLUMN expected_size INTEGER;")
-                .map_err(|error| error.to_string())?;
-        }
-        let has_kind = connection
-            .prepare("PRAGMA table_info(library_files)")
-            .and_then(|mut s| {
-                s.query_map([], |r| r.get::<_, String>(1))?
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|name| name == "kind");
-        if !has_kind {
-            connection
-                .execute_batch(
-                    "ALTER TABLE library_files ADD COLUMN kind TEXT NOT NULL DEFAULT 'music';",
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        for (table, column, definition) in [
-            ("plan_runs", "parent_plan_id", "TEXT"),
-            ("plan_runs", "rules_json", "TEXT"),
-            (
-                "plan_items",
-                "target_origin",
-                "TEXT NOT NULL DEFAULT 'rule'",
-            ),
-            ("plan_items", "conflict_group_id", "TEXT"),
-        ] {
-            let exists = connection
-                .prepare(&format!("PRAGMA table_info({table})"))
-                .and_then(|mut s| {
-                    s.query_map([], |r| r.get::<_, String>(1))?
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .map_err(|e| e.to_string())?
-                .iter()
-                .any(|name| name == column);
-            if !exists {
-                connection
-                    .execute_batch(&format!(
-                        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-                    ))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?1)",
-                params![now()],
-            )
-            .map_err(|e| e.to_string())?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(3,?1)",
-                params![now()],
-            )
-            .map_err(|e| e.to_string())?;
+        migrations::upgrade(&mut connection, now())?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -779,13 +593,13 @@ impl ScanStore for SqliteScanStore {
         }
         tx.commit().map_err(|e| e.to_string())
     }
-    fn finish_scan(&self, scan_id: &str, status: &str, warnings: u64) -> Result<(), String> {
+    fn finish_scan(&self, scan_id: &str, status: RunStatus, warnings: u64) -> Result<(), String> {
         self.connection
             .lock()
             .map_err(|_| "database mutex poisoned".to_string())?
             .execute(
                 "UPDATE scan_runs SET status=?2,finished_at=?3,warning_count=?4 WHERE id=?1",
-                params![scan_id, status, now(), warnings as i64],
+                params![scan_id, status.as_str(), now(), warnings as i64],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -879,7 +693,7 @@ impl PlanStore for SqliteScanStore {
                 .map(|value| value.to_string_lossy().into_owned());
             tx.execute("INSERT INTO plan_items(id,plan_id,ordinal,source_path,target_path,conflict_group_id,action,risk,reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![item.id.to_string(),plan_id,item.ordinal as i64,item.file.path.to_string_lossy(),target,group_id,plan_action_name(item.action),risk_name(item.risk),item.reason]).map_err(|error| error.to_string())?;
             if let (Some(group_id), Some(target)) = (&group_id, &target) {
-                tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'plan_items',?3,?4)", params![group_id,plan_id,target.to_lowercase(),target]).map_err(|error| error.to_string())?;
+                tx.execute("INSERT OR IGNORE INTO plan_conflict_groups(id,plan_id,kind,normalized_target_path,target_path) VALUES(?1,?2,'plan_items',?3,?4)", params![group_id,plan_id,windows_path_key(Path::new(target)),target]).map_err(|error| error.to_string())?;
                 tx.execute("INSERT INTO plan_conflict_members(conflict_group_id,plan_item_id) VALUES(?1,?2)", params![group_id,item.id.to_string()]).map_err(|error| error.to_string())?;
             } else if let Some(group_id) = &group_id {
                 if !item.conflict_candidates.is_empty() {
@@ -906,6 +720,17 @@ impl PlanStore for SqliteScanStore {
         snapshot_hash: &str,
     ) -> Result<(), String> {
         self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("UPDATE plan_runs SET status='completed',finished_at=?2,conflict_count=?3,risk_count=?4,snapshot_hash=?5 WHERE id=?1",params![plan_id,now(),conflict_count as i64,risk_count as i64,snapshot_hash]).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    fn fail_plan(&self, plan_id: &str) -> Result<(), String> {
+        self.connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?
+            .execute(
+                "UPDATE plan_runs SET status='failed',finished_at=?2 WHERE id=?1 AND status='running'",
+                params![plan_id, now()],
+            )
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
     fn record_metric(
@@ -1192,18 +1017,18 @@ impl ApplyStore for SqliteScanStore {
         Ok(id)
     }
     fn save_operation(&self, execution_id: &str, op: &OperationLog) -> Result<(), String> {
-        self.connection.lock().map_err(|_|"database mutex poisoned".to_string())?.execute("INSERT INTO operation_logs(id,execution_id,plan_item_id,sequence_no,source_path,target_path,action,result,error,source_deleted,expected_size,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![Uuid::new_v4().to_string(),execution_id,op.plan_item_id,op.sequence_no as i64,op.source.to_string_lossy(),op.target.as_ref().map(|p|p.to_string_lossy().into_owned()),op.action,op.result,op.error,op.source_deleted as i32,op.expected_size.map(|size|size as i64),now()]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_|"database mutex poisoned".to_string())?.execute("INSERT INTO operation_logs(id,execution_id,plan_item_id,sequence_no,source_path,target_path,action,result,error,source_deleted,expected_size,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![Uuid::new_v4().to_string(),execution_id,op.plan_item_id,op.sequence_no as i64,op.source.to_string_lossy(),op.target.as_ref().map(|p|p.to_string_lossy().into_owned()),op.action.as_str(),op.result.as_str(),op.error,op.source_deleted as i32,op.expected_size.map(|size|size as i64),now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn finish_execution(
         &self,
         execution_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         skipped: u64,
         failed: u64,
     ) -> Result<(), String> {
-        self.connection.lock().map_err(|_|"database mutex poisoned".to_string())?.execute("UPDATE execution_runs SET status=?2,finished_at=?3,success_count=?4,skipped_count=?5,failed_count=?6 WHERE id=?1",params![execution_id,status,now(),success as i64,skipped as i64,failed as i64]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_|"database mutex poisoned".to_string())?.execute("UPDATE execution_runs SET status=?2,finished_at=?3,success_count=?4,skipped_count=?5,failed_count=?6 WHERE id=?1",params![execution_id,status.as_str(),now(),success as i64,skipped as i64,failed as i64]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn record_metric(
@@ -1236,7 +1061,15 @@ impl VerifyStore for SqliteScanStore {
                     sequence_no: row.get::<_, i64>(1)? as u64,
                     source: row.get::<_, String>(2)?.into(),
                     target: row.get::<_, Option<String>>(3)?.map(Into::into),
-                    action: row.get(4)?,
+                    action: OperationAction::from_code(&row.get::<_, String>(4)?).ok_or_else(
+                        || {
+                            rusqlite::Error::InvalidColumnType(
+                                4,
+                                "action".into(),
+                                rusqlite::types::Type::Text,
+                            )
+                        },
+                    )?,
                     expected_size: row.get::<_, Option<i64>>(5)?.map(|size| size as u64),
                 })
             })
@@ -1249,20 +1082,20 @@ impl VerifyStore for SqliteScanStore {
         &self,
         execution_id: &str,
         operation_id: &str,
-        result: &str,
+        result: OperationResult,
         error: Option<&str>,
     ) -> Result<(), String> {
-        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO verify_logs(id,execution_id,operation_id,result,error,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![Uuid::new_v4().to_string(),execution_id,operation_id,result,error,now()]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO verify_logs(id,execution_id,operation_id,result,error,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![Uuid::new_v4().to_string(),execution_id,operation_id,result.as_str(),error,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn finish_verify(
         &self,
         verify_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         failed: u64,
     ) -> Result<(), String> {
-        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("UPDATE verify_runs SET status=?2,finished_at=?3,success_count=?4,failed_count=?5 WHERE id=?1", params![verify_id,status,now(),success as i64,failed as i64]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("UPDATE verify_runs SET status=?2,finished_at=?3,success_count=?4,failed_count=?5 WHERE id=?1", params![verify_id,status.as_str(),now(),success as i64,failed as i64]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn record_metric(
@@ -1283,27 +1116,53 @@ impl RollbackStore for SqliteScanStore {
         Ok(id)
     }
     fn load_rollback_items(&self, execution_id: &str) -> Result<Vec<VerifyItem>, String> {
-        <Self as VerifyStore>::load_successful_operations(self, execution_id)
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| "database mutex poisoned".to_string())?;
+        let mut statement = conn.prepare("SELECT id,sequence_no,source_path,target_path,action,expected_size FROM operation_logs WHERE execution_id=?1 AND ((result='success' AND action IN ('move','copy_delete')) OR (result='failed' AND action='copy_source_retained')) ORDER BY sequence_no").map_err(|error| error.to_string())?;
+        let items = statement
+            .query_map(params![execution_id], |row| {
+                let action = row.get::<_, String>(4)?;
+                Ok(VerifyItem {
+                    operation_id: row.get(0)?,
+                    sequence_no: row.get::<_, i64>(1)? as u64,
+                    source: row.get::<_, String>(2)?.into(),
+                    target: row.get::<_, Option<String>>(3)?.map(Into::into),
+                    action: OperationAction::from_code(&action).ok_or_else(|| {
+                        rusqlite::Error::InvalidColumnType(
+                            4,
+                            "action".into(),
+                            rusqlite::types::Type::Text,
+                        )
+                    })?,
+                    expected_size: row.get::<_, Option<i64>>(5)?.map(|size| size as u64),
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(items)
     }
     fn save_rollback_result(
         &self,
         execution_id: &str,
         operation_id: &str,
-        result: &str,
+        result: OperationResult,
         error: Option<&str>,
     ) -> Result<(), String> {
-        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO rollback_logs(id,execution_id,operation_id,result,error,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![Uuid::new_v4().to_string(),execution_id,operation_id,result,error,now()]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("INSERT INTO rollback_logs(id,execution_id,operation_id,result,error,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![Uuid::new_v4().to_string(),execution_id,operation_id,result.as_str(),error,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn finish_rollback(
         &self,
         rollback_id: &str,
-        status: &str,
+        status: RunStatus,
         success: u64,
         skipped: u64,
         failed: u64,
     ) -> Result<(), String> {
-        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("UPDATE rollback_runs SET status=?2,finished_at=?3,success_count=?4,skipped_count=?5,failed_count=?6 WHERE id=?1",params![rollback_id,status,now(),success as i64,skipped as i64,failed as i64]).map_err(|e|e.to_string())?;
+        self.connection.lock().map_err(|_| "database mutex poisoned".to_string())?.execute("UPDATE rollback_runs SET status=?2,finished_at=?3,success_count=?4,skipped_count=?5,failed_count=?6 WHERE id=?1",params![rollback_id,status.as_str(),now(),success as i64,skipped as i64,failed as i64]).map_err(|e|e.to_string())?;
         Ok(())
     }
     fn record_metric(
