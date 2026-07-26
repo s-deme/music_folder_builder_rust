@@ -830,12 +830,6 @@ pub fn plan_snapshot_hash(items: &[PlanItem]) -> String {
         if let Some(reason) = &item.reason {
             digest.update(reason.as_bytes());
         }
-        for candidate in &item.conflict_candidates {
-            digest.update(candidate.target_directory.to_string_lossy().as_bytes());
-            for member in &candidate.music_item_ids {
-                digest.update(member.as_bytes());
-            }
-        }
         digest.update([0xff]);
     }
     format!("{:x}", digest.finalize())
@@ -1072,6 +1066,37 @@ mod snapshot_tests {
         let before = plan_snapshot_hash(&[item.clone()]);
         item.target = Some(PathBuf::from("C:/out/b.mp3"));
         assert_ne!(before, plan_snapshot_hash(&[item]));
+    }
+
+    #[test]
+    fn plan_snapshot_hash_ignores_diagnostic_conflict_candidates() {
+        let file = ScannedFile {
+            id: Uuid::nil(),
+            path: PathBuf::from("C:/in/cover.jpg"),
+            fingerprint: FileFingerprint {
+                size_bytes: 1,
+                mtime_ns: 1,
+            },
+            metadata: None,
+            kind: FileKind::Image,
+        };
+        let mut item = PlanItem {
+            id: Uuid::nil(),
+            conflict_group_id: Some(Uuid::nil()),
+            ordinal: 1,
+            file,
+            target: None,
+            action: PlanAction::Skip,
+            risk: Risk::Conflict,
+            reason: Some("companion_target_ambiguous".into()),
+            conflict_candidates: Vec::new(),
+        };
+        let before = plan_snapshot_hash(&[item.clone()]);
+        item.conflict_candidates.push(PlanConflictCandidate {
+            target_directory: PathBuf::from("C:/out/Album"),
+            music_item_ids: vec![Uuid::new_v4()],
+        });
+        assert_eq!(before, plan_snapshot_hash(&[item]));
     }
 
     #[test]

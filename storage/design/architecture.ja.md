@@ -20,7 +20,7 @@ Desktop の状態 DB は Tauri の `app_local_data_dir` 配下の `music-folder.
 
 ## 実行状態
 
-`scan_run(completed) -> plan_run(completed) -> execution_run(dry_run|apply) -> verify_run -> rollback_run -> verify_run`。apply は `plan_item` の snapshot/hash を検証してから実行し、対象 plan の内容変更を拒否する。apply/rollback は一 worker の順序付き transaction/log flush で処理する。将来の並列 apply は directory lock と独立 target 集合を導入した scheduler に限定する。
+`scan_run(completed) -> plan_run(completed) -> execution_run(dry_run|apply) -> verify_run -> rollback_run -> verify_run`。apply は `plan_item` の snapshot/hash を検証してから実行し、対象 plan の内容変更を拒否する。snapshot hash は filesystem mutation を認可する `ordinal`、`source_path`、`target_path`、`action`、`risk`、`reason` の順序付き正規表現だけを対象とし、CoreでのPlan確定時とSQLite adapterでのapply前検証に同じfield順・区切りを用いる。画像target候補、衝突group/memberなどの診断情報はapply入力ではないためhash対象外とする。apply/rollback は一 worker の順序付き transaction/log flush で処理する。将来の並列 apply は directory lock と独立 target 集合を導入した scheduler に限定する。
 
 apply の実装順序は `plan item検証 -> target存在確認 -> 同一volume rename | 異volume copy -> size検証 -> source delete -> operation log commit` とする。dry-runは同じ事前条件評価とlog保存を行うが、filesystem mutationを呼ばない。
 

@@ -36,6 +36,17 @@ export function formatReason(reason: string): string {
   return /^[a-z][a-z0-9_]*(?::\d+)*$/.test(reason) ? "詳細不明の理由があります" : reason;
 }
 
+const workflowErrorLabels: Record<string, string> = {
+  plan_snapshot_mismatch: "保存されたPlanの整合性を確認できませんでした。安全のため実行を中止しました。Planを作り直してください。",
+  plan_snapshot_missing: "Planの整合性情報がありません。安全のため実行を中止しました。Planを作り直してください。",
+  plan_not_completed: "完了していないPlanは実行できません。",
+};
+
+export function formatWorkflowError(reason: unknown): string {
+  const message = String(reason);
+  return workflowErrorLabels[message] ?? message;
+}
+
 export function sourceFileName(path: string) { return path.split(/[\\/]/).at(-1) ?? "image"; }
 export function joinPath(directory: string, filename: string) { return `${directory.replace(/[\\/]$/, "")}\\${filename}`; }
 export function loadNaming(): NamingRules { try { return { ...defaultNaming, ...JSON.parse(localStorage.getItem("mfb.naming") ?? "{}") as Partial<NamingRules> }; } catch { return defaultNaming; } }

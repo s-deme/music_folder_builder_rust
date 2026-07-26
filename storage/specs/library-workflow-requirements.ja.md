@@ -12,6 +12,10 @@ WHEN 利用者が整理を実行する場合、THEN システム SHALL `scan -> 
 
 WHEN apply を開始する場合、THEN システム SHALL 永続化済みかつ完了した `plan_run_id` の items のみを実行し、scan 結果・UI フィルタ・タグから移動先を再計算しない。
 
+WHEN completed plan の snapshot hash を生成または検証する場合、THEN システム SHALL filesystem mutation を認可する plan item の `ordinal`、`source_path`、`target_path`、`action`、`risk`、`reason` を同一の正規形式で計算し、画像の移動先候補や衝突相手など apply 入力ではない診断情報を含めてはならない。
+
+IF 永続化済みの apply 入力項目が snapshot 作成後に変更された場合、THEN システム SHALL dry-run を含む apply を mutation 前に拒否する。
+
 ### REQ-SAF-003: Dry-run
 
 WHEN dry-run を要求された場合、THEN システム SHALL move/copy/delete/overwrite を行わず、item ごとの予測と execution run を保存し、本実行と明確に区別する。

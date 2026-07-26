@@ -39,6 +39,7 @@
 - [x] T34: `NamingRules.allow_missing_metadata`をserde default falseで追加し、無効時はmetadata不足itemをrisk付きskip、有効時は不足artist/albumを `Unknown Artist` / `Unknown Album` で補完してtargetを生成する。rules snapshot、CLI flag、Desktop checkbox、Core/SQLite/integration test、既存snapshotの後方互換testを追加し、`make validate`を実行する（T13、T16、T17、T18、T28依存）。
 - [x] T35: 同梱画像の複数target候補がすべて同一album directory直下のdisc directoryである場合、命名規則によるdisc階層の生成根拠を使ってalbum directoryへ正規化する。sourceのdisc内画像、異なるalbum、空またはcustomのdisc template、画像target衝突のCore・SQLite integration testを追加し、`make validate`を実行する（T16、T31依存）。
 - [x] T36: Coreのexecution/path policy、SQLiteのmigration/row、Reactのmodel/conflict component、integration test supportを責務別moduleへ分割する。typed workflow error/status/result、失敗時run終端化、metadata/cache error区別、apply中間状態、expected size付きrollback前提条件、WindowsPathKey、transactional SQLite migrationを導入し、重複Desktop scan commandを撤去してDocker validationを実行する（T03、T05、T07、T08、T10、T11依存）。
+- [ ] T37: Plan確定時とdry-run/apply前検証のsnapshot hashを、mutationを認可する`ordinal`、`source_path`、`target_path`、`action`、`risk`、`reason`の共通形式へ統一し、画像target候補などの診断情報による誤った`plan_snapshot_mismatch`を解消する。画像候補を含むPlanのdry-run/apply、手動target改訂、永続化済みapply入力の改変拒否をCore/SQLite integration testで検証し、内部error codeを日本語表示へ変換して`make validate`を実行する（T07、T16、T31、T36依存）。
 
 ## 外部受入確認
 

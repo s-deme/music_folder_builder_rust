@@ -537,6 +537,22 @@ fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
         .candidates
         .iter()
         .all(|candidate| candidate.members.len() == 1));
+
+    let files = Arc::new(LocalFileSystem);
+    let dry_run = ApplyUseCase {
+        store: Arc::clone(&store),
+        files: Arc::clone(&files),
+    }
+    .execute(&plan.plan_id, true)
+    .expect("diagnostic image candidates must not invalidate the plan snapshot");
+    assert_eq!(dry_run.success, 2);
+    assert_eq!(dry_run.skipped, 1);
+
+    let applied = ApplyUseCase { store, files }
+        .execute(&plan.plan_id, false)
+        .expect("the unchanged persisted plan must remain applicable");
+    assert_eq!(applied.success, 2);
+    assert_eq!(applied.skipped, 1);
 }
 
 #[test]

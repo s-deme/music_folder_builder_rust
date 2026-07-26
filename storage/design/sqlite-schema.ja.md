@@ -23,3 +23,5 @@
 主要 index は `library_files(canonical_path)` unique、`scan_items(scan_run_id,file_id)`、`plan_items(plan_run_id,ordinal)`、`plan_conflict_groups(plan_run_id,normalized_target_path)`、`plan_conflict_members(conflict_group_id,plan_item_id)`、`operation_logs(execution_run_id,sequence_no)`、各 run 外部キーと status。path は Windows canonical/display の両方を必要に応じ保存し、日時は UTC、サイズは INTEGER、JSON は監査用 payload としてのみ使う。
 
 plan revision は `parent_plan_id` を持つ新しい `plan_runs` と、再評価済みの全 `plan_items` を同一 transaction で保存する。`target_origin` は `rule` または `manual`、手動指定の理由は event_logs payload に保存する。履歴削除は run の依存グラフを子から親へ削除する transaction とし、running status を事前に拒否する。plan itemは targetを再計算せず、後続applyの唯一の入力になる。
+
+`plan_runs.snapshot_hash` は、`plan_items` を `ordinal` 順に読み、各行の `ordinal`、`source_path`、nullableな`target_path`、`action`、`risk`、nullableな`reason`を固定順・固定区切りでSHA-256へ入力した値とする。`plan_conflict_*` は診断用でありhash対象に含めない。Plan確定時とdry-run/apply前の再計算は同一形式を使用し、対象fieldの不一致時はfilesystem操作開始前に拒否する。
