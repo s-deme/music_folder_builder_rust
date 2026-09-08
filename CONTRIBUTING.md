@@ -2,6 +2,8 @@
 
 このrepositoryはWindows向けの安全な音楽library整理toolである。既存Python版は参照専用であり変更しない。
 
+通常の作業は新しいbranchを作らず `main` 上で行う。明示的な依頼や作業分離が必要な場合だけbranchを作り、統合後は削除する。Dependabotのversion更新は月次・ecosystem単位でまとめ、同時に開くPRを各1件に抑える。
+
 ## 変更順序
 
 挙動を変える変更は次の順序で行う。
