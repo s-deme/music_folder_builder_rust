@@ -10,6 +10,20 @@ tauri-build = { version = "2.0" }
 music-folder-core = { path = "../core" }
 music-folder-infra = { path = "../infra" }
 tauri = { version = "2.0", features = [] }
+tauri-plugin-dialog = "2.0"
 serde.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.15"

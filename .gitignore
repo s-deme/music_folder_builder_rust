@@ -3,10 +3,12 @@
 /dist/
 /ui/node_modules/
 /ui/dist/
+/ui/.test-dist/
 *.tsbuildinfo
 /src-tauri/target/
 *.db
 *.db-shm
 *.db-wal
 .env
+__pycache__/
 .docker/

@@ -3,64 +3,322 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
+
+# All Actions below are maintained by GitHub and pinned to full commit SHAs for
+# Node 24 compatibility. Dependabot opens reviewed updates; no binary cache is used.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_AUDIT_VERSION: "0.22.2"
+  CARGO_DENY_VERSION: "0.20.2"
+  TAURI_CLI_VERSION: "2.11.4"
+  NODE_VERSION: "24.18.0"
+  PYTHON_VERSION: "3.13.15"
 
 jobs:
-  test:
+  traceability:
+    name: SDD traceability and status
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Check REQ -> design -> task -> test links
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/check_traceability.py
+      - name: Prove negative fixture detection
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/test_traceability.py
+      - name: Prove release metadata tamper and omission detection
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/test_release_metadata.py
+      - name: Test verified-installer semantic policy
+        shell: pwsh
+        run: ./scripts/test_install_verified_release.ps1
+      - name: Prove CLI schema and benchmark policy negatives
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/test_cli_schema.py
+          python scripts/test_benchmark_policy.py
+
+  dependency-policy:
+    name: Rust dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Confirm pinned Rust toolchain
+        run: rustc --version --verbose
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Cache immutable downloads/index data only. Never restore target/ or executables.
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Install pinned audit tools
+        run: |
+          cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+      - name: RustSec advisory audit
+        # Vulnerabilities fail. Informational warnings remain visible; cargo-deny
+        # separately denies unmaintained/unsound advisories in workspace scope.
+        run: cargo audit
+      - name: License, source, advisory, and duplicate policy
+        run: cargo deny --locked check advisories bans licenses sources
+
+  validate:
+    name: Validate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-2025]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@stable
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+          librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
+      - name: Confirm pinned Rust toolchain
+        run: rustc --version --verbose
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          components: rustfmt, clippy
-      - uses: actions/setup-node@v6
+          # Registry/git downloads are safe to share by lockfile; build outputs are rebuilt.
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - run: npm --prefix ui ci
-      - run: npm --prefix ui audit --audit-level=moderate
+          package-manager-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Fetch Cargo.lock exactly
+        run: cargo fetch --locked
+      - name: Install UI from package-lock
+        run: npm --prefix ui ci
+      - name: Audit UI production dependencies
+        run: npm --prefix ui audit --audit-level=moderate
+      - name: Test UI workflow and accessibility contracts
+        run: npm --prefix ui test
+      - name: Typecheck UI
+        run: npm --prefix ui run check
+      - name: Build production UI
+        run: npm --prefix ui run build
+      - name: Inspect production CSP and Tauri schema
+        shell: pwsh
+        run: ./scripts/inspect_windows_bundle.ps1 -ConfigOnly
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Clippy with frozen dependency graph
+        run: cargo clippy --frozen --workspace --all-targets -- -D warnings
+      - name: Workspace tests with frozen dependency graph
+        run: cargo test --frozen --workspace
+      - name: Verify published CLI JSON schema against process output
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $database = Join-Path $env:RUNNER_TEMP "cli-schema.db"
+          $successSample = Join-Path $env:RUNNER_TEMP "cli-envelope-success.json"
+          $recoverySample = Join-Path $env:RUNNER_TEMP "cli-envelope-recovery-list.json"
+          $blockedSample = Join-Path $env:RUNNER_TEMP "cli-envelope-blocked.json"
+          $errorSample = Join-Path $env:RUNNER_TEMP "cli-envelope-error.json"
+          $invalidConfig = Join-Path $env:RUNNER_TEMP "invalid-cli-schema.toml"
+          "[naming]`nunknown_option = true" | Set-Content -LiteralPath $invalidConfig -Encoding utf8
+          $stdout = cargo run --frozen -p music-folder-cli -- --output json history list --db $database
+          if ($LASTEXITCODE -ne 0) { throw "success schema sample returned $LASTEXITCODE" }
+          $stdout | Set-Content -LiteralPath $successSample -Encoding utf8
+          $stdout = cargo run --frozen -p music-folder-cli -- --output json recovery list --db $database
+          if ($LASTEXITCODE -ne 0) { throw "recovery.list schema sample returned $LASTEXITCODE" }
+          $stdout | Set-Content -LiteralPath $recoverySample -Encoding utf8
+          $stdout = cargo run --frozen -p music-folder-cli -- --output json recovery run --operation-id operation-1 --execute --db $database
+          if ($LASTEXITCODE -ne 3) { throw "blocked schema sample returned $LASTEXITCODE" }
+          $stdout | Set-Content -LiteralPath $blockedSample -Encoding utf8
+          $target = Join-Path $env:RUNNER_TEMP "cli-schema-target"
+          $stdout = cargo run --frozen -p music-folder-cli -- --output json plan --scan-run-id scan-1 --target $target --config $invalidConfig --db $database
+          if ($LASTEXITCODE -ne 2) { throw "error schema sample returned $LASTEXITCODE" }
+          $stdout | Set-Content -LiteralPath $errorSample -Encoding utf8
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/check_cli_schema.py `
+            --sample $successSample `
+            --sample $recoverySample `
+            --sample $blockedSample `
+            --sample $errorSample
+      - name: Windows path, reparse, schema, and fault gates
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --frozen -p music-folder-infra --test windows_paths -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --frozen -p music-folder-infra --test atomic_no_replace -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --frozen -p music-folder-infra --test sqlite_snapshot_migration -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --frozen -p music-folder-infra --test workflow_integration -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify generated audio fixtures
         if: runner.os == 'Linux'
-        run: test -s crates/infra/tests/fixtures/flac/japanese.flac && test -s crates/infra/tests/fixtures/mp3/japanese.mp3 && test -s crates/infra/tests/fixtures/m4a/japanese.m4a && test -s crates/infra/tests/fixtures/ogg/japanese.ogg
-      - run: npm --prefix ui run check
-      - run: npm --prefix ui run build
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Benchmark fixture scan
+        run: >-
+          test -s crates/infra/tests/fixtures/flac/japanese.flac &&
+          test -s crates/infra/tests/fixtures/mp3/japanese.mp3 &&
+          test -s crates/infra/tests/fixtures/m4a/japanese.m4a &&
+          test -s crates/infra/tests/fixtures/ogg/japanese.ogg
+      - name: Materialize deterministic 100,000-item benchmark corpus
         if: runner.os == 'Linux'
-        run: cargo run -p music-folder-cli -- benchmark --source crates/infra/tests/fixtures --db benchmark.db > benchmark.json
-      - uses: actions/upload-artifact@v6
+        run: >-
+          python scripts/materialize_benchmark_corpus.py
+          --source crates/infra/tests/fixtures
+          --output "$RUNNER_TEMP/music-folder-benchmark-corpus"
+          --count 100000
+      - name: Benchmark three cold/warm Scan, Plan, and Apply dry-run iterations
+        if: runner.os == 'Linux'
+        run: >-
+          cargo run --frozen -p music-folder-cli -- --output json benchmark
+          --source "$RUNNER_TEMP/music-folder-benchmark-corpus"
+          --db "$RUNNER_TEMP/benchmark.db" --iterations 3 > benchmark.json
+      - name: Enforce fixture performance ceilings
+        if: runner.os == 'Linux'
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/check_benchmark.py benchmark.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: runner.os == 'Linux'
         with:
           name: benchmark-json
-          path: benchmark.json
+          path: |
+            benchmark.json
+            scripts/benchmark-policy.json
+          if-no-files-found: error
+          retention-days: 7
+
   windows-bundle:
-    runs-on: windows-latest
-    needs: test
+    name: Windows artifact and installer smoke
+    runs-on: windows-2025
+    timeout-minutes: 75
+    needs: [traceability, dependency-policy, validate]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          node-version: 24
+          persist-credentials: false
+      - name: Confirm pinned Rust toolchain
+        run: rustc --version --verbose
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - run: npm --prefix ui ci
-      - run: npm --prefix ui audit --audit-level=moderate
-      - run: npm --prefix ui run build
-      - name: Build Windows bundle
-        working-directory: crates/desktop
-        run: npm --prefix ../../ui exec --yes --package @tauri-apps/cli tauri build
-      - uses: actions/upload-artifact@v6
+          package-manager-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          name: music-folder-desktop-windows
-          path: target/release/bundle/**
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Fetch Cargo.lock exactly
+        run: cargo fetch --locked
+      - name: Install and build UI from package-lock
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui audit --audit-level=moderate
+          npm --prefix ui test
+          npm --prefix ui run build
+      - name: Install Tauri CLI from its published Cargo.lock
+        shell: pwsh
+        run: cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked --root (Join-Path $env:RUNNER_TEMP "tauri-cli")
+      - name: Build unsigned MSI and NSIS from frozen Cargo.lock
+        working-directory: crates/desktop
+        shell: pwsh
+        run: |
+          $tauri = Join-Path $env:RUNNER_TEMP "tauri-cli/bin/cargo-tauri.exe"
+          & $tauri build --ci --no-sign --bundles msi,nsis -- --frozen
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build CLI Windows artifact from frozen Cargo.lock
+        shell: pwsh
+        run: cargo build --frozen --release -p music-folder-cli
+      - name: Record exact installer build environment
+        shell: pwsh
+        run: |
+          $tauri = Join-Path $env:RUNNER_TEMP "tauri-cli/bin/cargo-tauri.exe"
+          python scripts/record_build_environment.py `
+            --output target/release/bundle/build-environment.json `
+            --role windows-installer-build `
+            --commit $env:GITHUB_SHA `
+            --workflow-ref $env:GITHUB_WORKFLOW_REF `
+            --expected-node-version $env:NODE_VERSION `
+            --expected-python-version $env:PYTHON_VERSION `
+            --tauri-cli-path $tauri `
+            --expected-tauri-cli-version $env:TAURI_CLI_VERSION `
+            --require-runner-image
+      - name: Inspect embedded manifest, CSP, schema, and installer set
+        shell: pwsh
+        run: ./scripts/inspect_windows_bundle.ps1
+      - name: Enable the Windows long-path policy for artifact smoke
+        shell: pwsh
+        run: |
+          New-ItemProperty `
+            -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force | Out-Null
+      - name: Smoke-test CLI artifact with a SQLite path over 260 characters
+        shell: pwsh
+        run: ./scripts/test_cli_long_path.ps1
+      - name: Smoke-test MSI extraction and NSIS install/uninstall
+        shell: pwsh
+        run: ./scripts/test_windows_installer.ps1 -BundleDirectory target/release/bundle
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: music-folder-desktop-windows-unsigned
+          path: |
+            target/release/music-folder-desktop.exe
+            target/release/bundle/**
           if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: music-folder-cli-windows-unsigned
+          path: target/release/music-folder.exe
+          if-no-files-found: error
+          retention-days: 14

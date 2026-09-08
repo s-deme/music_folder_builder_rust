@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "benchmark_schema_version": 2,
+  "corpus_items": 100000,
+  "minimum_iterations": 3,
+  "maximum_iterations": 10,
+  "max_elapsed_ms": {
+    "cold": 900000,
+    "warm": 300000,
+    "plan": 900000,
+    "apply_dry_run": 900000
+  },
+  "min_items_per_second": {
+    "cold": 100.0,
+    "warm": 500.0,
+    "plan": 50.0,
+    "apply_dry_run": 50.0
+  },
+  "min_warm_cache_hit_rate": 0.95,
+  "max_apply_failed": 0,
+  "max_peak_rss_bytes": 536870912,
+  "max_rss_growth_bytes": 536870912,
+  "max_rss_sampling_interval_ms": 5
+}

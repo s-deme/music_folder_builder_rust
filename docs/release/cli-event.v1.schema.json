@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://music-folder-builder.invalid/schemas/cli-event.v1.schema.json",
+  "title": "Music Folder Builder CLI JSONL event v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_type",
+    "sequence",
+    "correlation_id",
+    "command",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_type": {
+      "type": "string",
+      "enum": ["progress", "terminal", "serialization_error"]
+    },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "command": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false
+}

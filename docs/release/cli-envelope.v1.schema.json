@@ -1,0 +1,696 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://music-folder-builder.invalid/schema/cli-envelope.v1.schema.json",
+  "title": "Music Folder Builder CLI JSON envelope 1.1",
+  "description": "One stdout document emitted by --output json. Major 1 consumers must ignore additive fields introduced by later minor revisions; removals, renames, or semantic changes require a new major schema.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "schema_revision",
+    "command",
+    "status",
+    "result_type",
+    "correlation",
+    "counts",
+    "diagnostics",
+    "result",
+    "data",
+    "error"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "schema_revision": { "$ref": "#/$defs/schemaRevision" },
+    "command": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "success",
+        "blocked",
+        "partial",
+        "error",
+        "lease_busy",
+        "recovery_required",
+        "verify_mismatch",
+        "cancelled"
+      ]
+    },
+    "result_type": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "correlation": { "$ref": "#/$defs/correlation" },
+    "counts": { "$ref": "#/$defs/counts" },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "result": true,
+    "data": true,
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/error" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "command": { "const": "recovery.list" },
+          "error": { "type": "null" }
+        },
+        "required": ["command", "error"]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/recoveryListResult"
+          },
+          "data": {
+            "$ref": "#/$defs/recoveryListResult"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "scan" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/scanResult" }, "data": { "$ref": "#/$defs/scanResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "plan" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/planResult" }, "data": { "$ref": "#/$defs/planResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "plan.revise" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/planRevisionResult" }, "data": { "$ref": "#/$defs/planRevisionResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "apply" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/applyResult" }, "data": { "$ref": "#/$defs/applyResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "verify" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/verifyResult" }, "data": { "$ref": "#/$defs/verifyResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "rollback" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/rollbackResult" }, "data": { "$ref": "#/$defs/rollbackResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "history.list" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/historyListResult" }, "data": { "$ref": "#/$defs/historyListResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "history.cleanup-preview" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/historyCleanupResult" }, "data": { "$ref": "#/$defs/historyCleanupResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "history.archive" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/historyArchiveResult" }, "data": { "$ref": "#/$defs/historyArchiveResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "history.delete" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/historyDeleteResult" }, "data": { "$ref": "#/$defs/historyDeleteResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "recovery.run" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/recoveryRunResult" }, "data": { "$ref": "#/$defs/recoveryRunResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "diagnostics.export" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/diagnosticExportResult" }, "data": { "$ref": "#/$defs/diagnosticExportResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "diagnostics.retention" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/diagnosticRetentionResult" }, "data": { "$ref": "#/$defs/diagnosticRetentionResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "completions" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/completionResult" }, "data": { "$ref": "#/$defs/completionResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "const": "man" }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/manualResult" }, "data": { "$ref": "#/$defs/manualResult" } } }
+    },
+    {
+      "if": {
+        "properties": { "command": { "enum": ["cli", "history", "recovery", "diagnostics"] }, "error": { "type": "null" } },
+        "required": ["command", "error"]
+      },
+      "then": { "properties": { "result": { "$ref": "#/$defs/textResult" }, "data": { "$ref": "#/$defs/textResult" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": { "const": "benchmark" },
+          "error": { "type": "null" }
+        },
+        "required": ["command", "error"]
+      },
+      "then": {
+        "properties": {
+          "result": { "$ref": "#/$defs/benchmarkResult" },
+          "data": { "$ref": "#/$defs/benchmarkResult" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "schemaRevision": {
+      "type": "object",
+      "required": ["major", "minor"],
+      "properties": {
+        "major": { "const": 1 },
+        "minor": { "const": 1 }
+      },
+      "additionalProperties": false
+    },
+    "correlation": {
+      "type": "object",
+      "required": ["logical_run_id", "attempt_id", "subject_id"],
+      "properties": {
+        "logical_run_id": { "type": ["string", "null"] },
+        "attempt_id": { "type": ["string", "null"] },
+        "subject_id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "code",
+        "severity",
+        "phase",
+        "message_key",
+        "correlation_id",
+        "context"
+      ],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "phase": { "type": "string", "minLength": 1 },
+        "message_key": { "type": "string", "minLength": 1 },
+        "correlation_id": { "type": ["string", "null"] },
+        "context": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "textResult": {
+      "type": "object",
+      "required": ["text"],
+      "properties": { "text": { "type": "string" } },
+      "additionalProperties": true
+    },
+    "scanResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["scan_run_id", "files", "cache_hits", "warnings"],
+          "properties": {
+            "scan_run_id": { "type": "string", "minLength": 1 },
+            "files": { "type": "integer", "minimum": 0 },
+            "cache_hits": { "type": "integer", "minimum": 0 },
+            "warnings": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "planResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["plan_run_id", "items", "conflicts", "risks", "naming"],
+          "properties": {
+            "plan_run_id": { "type": "string", "minLength": 1 },
+            "items": { "type": "integer", "minimum": 0 },
+            "conflicts": { "type": "integer", "minimum": 0 },
+            "risks": { "type": "integer", "minimum": 0 },
+            "naming": { "type": "object" }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "planRevisionResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["parent_plan_run_id", "plan_run_id", "changes"],
+          "properties": {
+            "parent_plan_run_id": { "type": "string", "minLength": 1 },
+            "plan_run_id": { "type": "string", "minLength": 1 },
+            "changes": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "applyResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["execution_run_id", "plan_run_id", "mode", "success", "skipped", "failed", "recovery_operation_ids"],
+          "properties": {
+            "execution_run_id": { "type": "string", "minLength": 1 },
+            "plan_run_id": { "type": "string", "minLength": 1 },
+            "mode": { "enum": ["dry_run", "apply"] },
+            "success": { "type": "integer", "minimum": 0 },
+            "skipped": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "recovery_operation_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "verifyResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["verify_run_id", "subject_kind", "subject_id", "execution_run_id", "success", "failed"],
+          "properties": {
+            "verify_run_id": { "type": "string", "minLength": 1 },
+            "subject_kind": { "enum": ["execution", "rollback", "recovery"] },
+            "subject_id": { "type": "string", "minLength": 1 },
+            "execution_run_id": { "type": ["string", "null"], "minLength": 1 },
+            "success": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "rollbackResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["rollback_run_id", "execution_run_id", "mode", "success", "skipped", "failed", "recovery_operation_ids"],
+          "properties": {
+            "rollback_run_id": { "type": "string", "minLength": 1 },
+            "execution_run_id": { "type": "string", "minLength": 1 },
+            "mode": { "enum": ["dry_run", "rollback"] },
+            "success": { "type": "integer", "minimum": 0 },
+            "skipped": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "recovery_operation_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "historyRow": {
+      "type": "object",
+      "required": ["id", "kind", "mode", "status", "started_at", "finished_at", "parent_id", "root_scan_id", "success", "skipped", "failed"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "mode": { "type": ["string", "null"] },
+        "status": { "type": "string", "minLength": 1 },
+        "started_at": { "type": "integer" },
+        "finished_at": { "type": ["integer", "null"] },
+        "parent_id": { "type": ["string", "null"] },
+        "root_scan_id": { "type": "string", "minLength": 1 },
+        "success": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "historyListResult": {
+      "oneOf": [
+        { "type": "array", "items": { "$ref": "#/$defs/historyRow" } },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "historyCleanupResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["root_scan_id", "plans", "executions", "logs", "blocked", "protection_reasons", "estimated_bytes", "archive_path", "archived"],
+          "properties": {
+            "root_scan_id": { "type": "string", "minLength": 1 },
+            "plans": { "type": "integer", "minimum": 0 },
+            "executions": { "type": "integer", "minimum": 0 },
+            "logs": { "type": "integer", "minimum": 0 },
+            "blocked": { "type": "boolean" },
+            "protection_reasons": { "type": "array", "items": { "type": "string" } },
+            "estimated_bytes": { "type": "integer", "minimum": 0 },
+            "archive_path": { "$ref": "#/$defs/nativePath" },
+            "archived": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "historyArchiveResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["archive_id", "root_scan_id", "archive_path", "schema_version", "record_count", "byte_count", "digest_algorithm", "sha256", "verified", "already_archived"],
+          "properties": {
+            "archive_id": { "type": "string", "minLength": 1 },
+            "root_scan_id": { "type": "string", "minLength": 1 },
+            "archive_path": { "$ref": "#/$defs/nativePath" },
+            "schema_version": { "type": "integer", "minimum": 1 },
+            "record_count": { "type": "integer", "minimum": 0 },
+            "byte_count": { "type": "integer", "minimum": 0 },
+            "digest_algorithm": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "verified": { "type": "boolean" },
+            "already_archived": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "historyDeleteResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["run_id", "kind", "deleted", "plans", "executions", "logs"],
+          "properties": {
+            "run_id": { "type": "string", "minLength": 1 },
+            "kind": { "type": "string", "minLength": 1 },
+            "deleted": { "const": true },
+            "plans": { "type": "integer", "minimum": 0 },
+            "executions": { "type": "integer", "minimum": 0 },
+            "logs": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "recoveryRunResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["recovery_run_id", "operation_id", "action", "mode"],
+          "properties": {
+            "recovery_run_id": { "type": "string", "minLength": 1 },
+            "operation_id": { "type": "string", "minLength": 1 },
+            "action": { "type": "string", "minLength": 1 },
+            "mode": { "enum": ["dry_run", "recovery"] }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "diagnosticExportResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["export_path", "schema_version", "record_count", "byte_count", "sha256", "sensitive_paths_redacted"],
+          "properties": {
+            "export_path": { "$ref": "#/$defs/nativePath" },
+            "schema_version": { "type": "integer", "minimum": 1 },
+            "record_count": { "type": "integer", "minimum": 0 },
+            "byte_count": { "type": "integer", "minimum": 0 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "sensitive_paths_redacted": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "diagnosticRetentionResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["retention_run_id", "deleted_progress_debug", "deleted_diagnostic", "deleted_recovery_audit", "protected_remaining", "database_bytes", "capacity_exceeded"],
+          "properties": {
+            "retention_run_id": { "type": "string", "minLength": 1 },
+            "deleted_progress_debug": { "type": "integer", "minimum": 0 },
+            "deleted_diagnostic": { "type": "integer", "minimum": 0 },
+            "deleted_recovery_audit": { "type": "integer", "minimum": 0 },
+            "protected_remaining": { "type": "integer", "minimum": 0 },
+            "database_bytes": { "type": "integer", "minimum": 0 },
+            "capacity_exceeded": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["dry_run", "policy", "preview"],
+          "properties": {
+            "dry_run": { "const": true },
+            "policy": { "type": "object" },
+            "preview": { "type": "object" }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "completionResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["shell", "script"],
+          "properties": {
+            "shell": { "enum": ["bash", "zsh", "fish", "powershell"] },
+            "script": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "manualResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["manual"],
+          "properties": { "manual": { "type": "string", "minLength": 1 } },
+          "additionalProperties": true
+        },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "nativePath": {
+      "type": "object",
+      "description": "Lossless native path. display is presentation-only; raw_base64 is authoritative for the named encoding.",
+      "required": ["schema_version", "role", "display", "encoding", "raw_base64"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "role": {
+          "enum": [
+            "source",
+            "target",
+            "temporary",
+            "history_archive",
+            "diagnostic_export"
+          ]
+        },
+        "display": { "type": "string" },
+        "encoding": {
+          "enum": ["windows_utf16le_v1", "unix_bytes_v1", "utf8_legacy_v1"]
+        },
+        "raw_base64": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "recoveryItem": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "attempt_id",
+        "sequence_no",
+        "state",
+        "source",
+        "target",
+        "temporary",
+        "expected_size",
+        "expected_content_sha256",
+        "suggested_action"
+      ],
+      "properties": {
+        "operation_id": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "sequence_no": { "type": "integer", "minimum": 0 },
+        "state": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/nativePath" },
+        "target": { "$ref": "#/$defs/nativePath" },
+        "temporary": { "$ref": "#/$defs/nativePath" },
+        "expected_size": { "type": "integer", "minimum": 0 },
+        "expected_content_sha256": { "type": ["string", "null"] },
+        "suggested_action": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "recoveryListResult": {
+      "oneOf": [
+        { "type": "array", "items": { "$ref": "#/$defs/recoveryItem" } },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    },
+    "benchmarkPhase": {
+      "type": "object",
+      "required": ["elapsed_ms", "items_per_second"],
+      "properties": {
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "items_per_second": { "type": "number", "minimum": 0 }
+      }
+    },
+    "benchmarkIteration": {
+      "type": "object",
+      "required": [
+        "iteration",
+        "cold",
+        "warm",
+        "plan",
+        "apply_dry_run",
+        "peak_rss_bytes"
+      ],
+      "properties": {
+        "iteration": { "type": "integer", "minimum": 1 },
+        "cold": { "$ref": "#/$defs/benchmarkPhase" },
+        "warm": { "$ref": "#/$defs/benchmarkPhase" },
+        "plan": { "$ref": "#/$defs/benchmarkPhase" },
+        "apply_dry_run": { "$ref": "#/$defs/benchmarkPhase" },
+        "peak_rss_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "benchmarkSummary": {
+      "allOf": [
+        { "$ref": "#/$defs/benchmarkPhase" },
+        {
+          "type": "object",
+          "required": ["statistic"],
+          "properties": { "statistic": { "const": "median" } }
+        }
+      ]
+    },
+    "benchmarkPayload": {
+      "type": "object",
+      "required": [
+        "benchmark_schema_version",
+        "iterations",
+        "iteration_count",
+        "cold",
+        "warm",
+        "plan",
+        "apply_dry_run",
+        "rss_bytes",
+        "peak_rss_bytes",
+        "baseline_rss_bytes",
+        "rss_growth_bytes",
+        "rss_sampling_interval_ms",
+        "workspace_ephemeral"
+      ],
+      "properties": {
+        "benchmark_schema_version": { "const": 2 },
+        "iterations": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/benchmarkIteration" }
+        },
+        "iteration_count": { "type": "integer", "minimum": 3, "maximum": 10 },
+        "cold": { "$ref": "#/$defs/benchmarkSummary" },
+        "warm": { "$ref": "#/$defs/benchmarkSummary" },
+        "plan": { "$ref": "#/$defs/benchmarkSummary" },
+        "apply_dry_run": { "$ref": "#/$defs/benchmarkSummary" },
+        "rss_bytes": { "type": "integer", "minimum": 1 },
+        "peak_rss_bytes": { "type": "integer", "minimum": 1 },
+        "baseline_rss_bytes": { "type": "integer", "minimum": 0 },
+        "rss_growth_bytes": { "type": "integer", "minimum": 0 },
+        "rss_sampling_interval_ms": { "const": 5 },
+        "workspace_ephemeral": { "const": true }
+      },
+      "additionalProperties": true
+    },
+    "benchmarkResult": {
+      "oneOf": [
+        { "$ref": "#/$defs/benchmarkPayload" },
+        { "$ref": "#/$defs/textResult" }
+      ]
+    }
+  },
+  "x-compatibility": {
+    "major": "breaking",
+    "minor": "additive-only at envelope and common-object boundaries; consumers ignore unknown fields",
+    "current": "1.1"
+  },
+  "x-exit-codes": {
+    "success": 0,
+    "usage": 2,
+    "blocked": 3,
+    "partial": 4,
+    "internal": 5,
+    "lease_busy": 6,
+    "recovery_required": 7,
+    "verify_mismatch": 8,
+    "cancelled": 9
+  }
+}

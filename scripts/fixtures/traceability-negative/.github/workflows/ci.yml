@@ -1,0 +1,9 @@
+name: Negative fixture CI
+
+on: push
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test --workspace

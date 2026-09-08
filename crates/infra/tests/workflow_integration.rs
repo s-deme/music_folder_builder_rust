@@ -1,4 +1,4 @@
-use music_folder_core::ports::{ManualTargetChange, MetadataReader};
+use music_folder_core::ports::{ApplyStore, ManualTargetChange, MetadataReader};
 use music_folder_core::usecases::{
     ApplyUseCase, CancellationToken, PlanOptions, PlanUseCase, RevisePlanUseCase, RollbackUseCase,
     ScanOptions, ScanUseCase, VerifyUseCase,
@@ -11,6 +11,14 @@ use tempfile::tempdir;
 
 mod support;
 use support::fixture;
+
+fn mutation_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GUARD
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 struct DiscMetadataReader;
 
@@ -41,6 +49,7 @@ impl MetadataReader for DiscMetadataReader {
 
 #[test]
 fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
+    let _guard = mutation_test_guard();
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
     let target = temp.path().join("target");
@@ -94,6 +103,51 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
     .unwrap();
     assert_eq!(applied.success, 1);
     assert!(!original.exists());
+    let preflight_rows = rusqlite::Connection::open(&database)
+        .unwrap()
+        .prepare(
+            "SELECT run.parent_attempt_id,run.kind,run.mode,run.status,
+                    log.outcome,log.code,
+                    log.expected_content_sha256,log.observed_content_sha256
+               FROM preflight_runs run
+               JOIN preflight_logs log ON log.preflight_id=run.id
+              WHERE run.parent_attempt_id IN (?1,?2)
+              ORDER BY run.mode",
+        )
+        .unwrap()
+        .query_map(
+            rusqlite::params![dry.execution_id, applied.execution_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(preflight_rows.len(), 2);
+    assert!(preflight_rows.iter().all(|row| {
+        row.1 == "apply"
+            && row.3 == "passed"
+            && row.4 == "passed"
+            && row.5.is_none()
+            && row.6 == row.7
+    }));
+    assert_eq!(
+        preflight_rows
+            .iter()
+            .map(|row| row.2.as_str())
+            .collect::<Vec<_>>(),
+        ["dry_run", "mutation"]
+    );
     let repeated = ApplyUseCase {
         store: Arc::clone(&store),
         files: Arc::clone(&files),
@@ -142,6 +196,50 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
     .unwrap();
     assert_eq!(rollback.failed, 0);
     assert!(original.exists());
+    assert!(!first_page[0]
+        .target_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).exists()));
+    let repeated_rollback = RollbackUseCase {
+        store: Arc::clone(&store),
+        files: Arc::clone(&files),
+    }
+    .execute(&applied.execution_id, false)
+    .unwrap();
+    assert_eq!(
+        (
+            repeated_rollback.success,
+            repeated_rollback.skipped,
+            repeated_rollback.failed,
+        ),
+        (0, 1, 0),
+        "a completed rollback is idempotent only through its durable journal evidence"
+    );
+    assert!(original.exists());
+    let (operation_action, journal_strategy): (String, String) =
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT operation.action,journal.strategy
+                   FROM operation_logs operation
+                   JOIN operation_journal journal
+                     ON journal.attempt_id=operation.execution_id
+                    AND journal.plan_item_id=operation.plan_item_id
+                  WHERE operation.execution_id=?1",
+                rusqlite::params![applied.execution_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+    #[cfg(windows)]
+    assert_eq!(
+        (operation_action.as_str(), journal_strategy.as_str()),
+        ("move", "atomic_no_replace_rename")
+    );
+    #[cfg(not(windows))]
+    assert_eq!(
+        (operation_action.as_str(), journal_strategy.as_str()),
+        ("copy_delete", "copy_publish_delete")
+    );
     let history = SqliteScanStore::open(&database)
         .unwrap()
         .list_history(100, None)
@@ -214,18 +312,18 @@ fn persisted_plan_drives_dry_run_apply_verify_and_rollback() {
         "invalid_run_kind"
     );
 
-    rusqlite::Connection::open(&database)
+    let tamper_error = rusqlite::Connection::open(&database)
         .unwrap()
         .execute(
-            "UPDATE plan_items SET target_path=target_path || '.tampered' WHERE plan_id=?1",
+            // The display path is deliberately not authoritative once a lossless
+            // path blob exists. Mutate a canonical authorization field instead.
+            "UPDATE plan_items SET action='skip' WHERE plan_id=?1",
             rusqlite::params![plan.plan_id],
         )
-        .unwrap();
-    let mismatch = ApplyUseCase { store, files }
-        .execute(&plan.plan_id, true)
-        .err()
-        .expect("tampered snapshot must be rejected");
-    assert_eq!(mismatch.code(), "plan_snapshot_mismatch");
+        .unwrap_err()
+        .to_string();
+    assert!(tamper_error.contains("completed_plan_items_immutable"));
+    store.validate_plan_snapshot(&plan.plan_id).unwrap();
 }
 
 #[test]
@@ -490,14 +588,16 @@ fn plan_sequences_same_named_images_collapsed_to_the_album_directory() {
 
 #[test]
 fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
+    let _guard = mutation_test_guard();
     let temp = tempdir().unwrap();
+    let database = temp.path().join("state.db");
     let source = temp.path().join("source");
     let target = temp.path().join("target");
     fs::create_dir_all(&source).unwrap();
     fs::copy(fixture("mp3/japanese.mp3"), source.join("one.mp3")).unwrap();
     fs::copy(fixture("mp3/japanese.mp3"), source.join("two.mp3")).unwrap();
     fs::write(source.join("cover.jpg"), b"fixture image").unwrap();
-    let store = Arc::new(SqliteScanStore::open(&temp.path().join("state.db")).unwrap());
+    let store = Arc::new(SqliteScanStore::open(&database).unwrap());
     let scan = ScanUseCase {
         fs: Arc::new(LocalFileSystem),
         metadata: Arc::new(LoftyMetadataReader),
@@ -528,15 +628,95 @@ fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
     assert_eq!(image.reason.as_deref(), Some("companion_target_ambiguous"));
     assert_eq!(image.conflict_member_count, 2);
     assert!(image.target_path.is_none());
+    let conflict_group_id = image.conflict_group_id.clone().unwrap();
     let detail = store
-        .get_plan_conflict_detail(&plan.plan_id, image.conflict_group_id.as_deref().unwrap())
+        .get_plan_conflict_detail(&plan.plan_id, &conflict_group_id)
         .unwrap();
     assert_eq!(detail.kind, "image_destination");
     assert_eq!(detail.candidates.len(), 2);
+    assert_eq!(
+        detail
+            .candidates
+            .iter()
+            .map(|candidate| candidate.ordinal)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
     assert!(detail
         .candidates
         .iter()
         .all(|candidate| candidate.members.len() == 1));
+    for candidate in &detail.candidates {
+        let resolved = store
+            .resolve_plan_conflict_candidate_target(
+                &plan.plan_id,
+                &image.id,
+                &conflict_group_id,
+                candidate.ordinal,
+            )
+            .unwrap();
+        assert_eq!(resolved.parent(), Some(Path::new(&candidate.target_path)));
+        assert_eq!(resolved.file_name().unwrap(), "cover.jpg");
+    }
+    assert_eq!(
+        store
+            .resolve_plan_conflict_candidate_target(
+                &plan.plan_id,
+                "different-item",
+                &conflict_group_id,
+                1,
+            )
+            .unwrap_err(),
+        "plan_conflict_candidate_not_found"
+    );
+
+    let raw = rusqlite::Connection::open(&database).unwrap();
+    let lossless_candidates: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM plan_conflict_candidates
+              WHERE conflict_group_id=?1
+                AND target_path_encoding IS NOT NULL
+                AND target_path_blob IS NOT NULL",
+            rusqlite::params![conflict_group_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lossless_candidates, 2);
+    for statement in [
+        "UPDATE plan_conflict_candidates SET target_path=target_path || '-tampered' WHERE conflict_group_id=?1",
+        "DELETE FROM plan_conflict_candidates WHERE conflict_group_id=?1",
+        "UPDATE plan_conflict_candidate_members SET candidate_ordinal=candidate_ordinal WHERE conflict_group_id=?1",
+        "DELETE FROM plan_conflict_candidate_members WHERE conflict_group_id=?1",
+        "UPDATE plan_conflict_members SET plan_item_id=plan_item_id WHERE conflict_group_id=?1",
+        "DELETE FROM plan_conflict_members WHERE conflict_group_id=?1",
+    ] {
+        let error = raw
+            .execute(statement, rusqlite::params![conflict_group_id])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("completed_plan_conflicts_immutable"));
+    }
+    let insert_error = raw
+        .execute(
+            "INSERT INTO plan_conflict_candidates(
+                 conflict_group_id,ordinal,target_path,target_path_encoding,target_path_blob
+             ) VALUES(?1,99,'x','utf8_legacy_v1',X'78')",
+            rusqlite::params![conflict_group_id],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(insert_error.contains("plan_not_running"));
+    let insert_member_error = raw
+        .execute(
+            "INSERT INTO plan_conflict_candidate_members(
+                 conflict_group_id,candidate_ordinal,plan_item_id
+             ) VALUES(?1,1,?2)",
+            rusqlite::params![conflict_group_id, image.id],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(insert_member_error.contains("plan_not_running"));
+    drop(raw);
 
     let files = Arc::new(LocalFileSystem);
     let dry_run = ApplyUseCase {
@@ -548,11 +728,39 @@ fn ambiguous_image_persists_every_destination_candidate_and_music_source() {
     assert_eq!(dry_run.success, 2);
     assert_eq!(dry_run.skipped, 1);
 
-    let applied = ApplyUseCase { store, files }
-        .execute(&plan.plan_id, false)
-        .expect("the unchanged persisted plan must remain applicable");
+    let applied = ApplyUseCase {
+        store: Arc::clone(&store),
+        files,
+    }
+    .execute(&plan.plan_id, false)
+    .expect("the unchanged persisted plan must remain applicable");
     assert_eq!(applied.success, 2);
     assert_eq!(applied.skipped, 1);
+
+    // Even an external writer with schema-changing privileges cannot turn an
+    // unknown future codec into a path identity accepted by the adapter.
+    let raw = rusqlite::Connection::open(&database).unwrap();
+    raw.execute_batch("DROP TRIGGER plan_conflict_candidates_completed_immutable;")
+        .unwrap();
+    raw.execute(
+        "UPDATE plan_conflict_candidates
+            SET target_path_encoding='future_path_v99'
+          WHERE conflict_group_id=?1 AND ordinal=1",
+        rusqlite::params![conflict_group_id],
+    )
+    .unwrap();
+    drop(raw);
+    assert_eq!(
+        store
+            .resolve_plan_conflict_candidate_target(
+                &plan.plan_id,
+                &image.id,
+                &conflict_group_id,
+                1,
+            )
+            .unwrap_err(),
+        "path_encoding_unknown:future_path_v99"
+    );
 }
 
 #[test]
@@ -716,6 +924,7 @@ fn conflict_detail_lists_every_source_and_revision_rechecks_the_group() {
 
 #[test]
 fn manual_target_creates_immutable_child_plan() {
+    let _guard = mutation_test_guard();
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
     let target = temp.path().join("target");
@@ -789,7 +998,8 @@ fn manual_target_creates_immutable_child_plan() {
 }
 
 #[test]
-fn deleting_parent_plan_removes_descendants_without_touching_files() {
+fn purging_verified_root_scan_removes_descendants_without_touching_files() {
+    let _guard = mutation_test_guard();
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
     let target = temp.path().join("target");
@@ -833,8 +1043,17 @@ fn deleting_parent_plan_removes_descendants_without_touching_files() {
         }],
     )
     .unwrap();
-    store.delete_history("plan", &parent.plan_id).unwrap();
+    assert_eq!(
+        store.delete_history("plan", &parent.plan_id).unwrap_err(),
+        "history_purge_requires_root_scan"
+    );
+    store.archive_history("scan", &scan.scan_id, None).unwrap();
+    store.delete_history("scan", &scan.scan_id).unwrap();
     assert!(original.exists());
+    assert_eq!(
+        store.get_run_detail("scan", &scan.scan_id).unwrap_err(),
+        "run_not_found"
+    );
     assert_eq!(
         store.get_run_detail("plan", &parent.plan_id).unwrap_err(),
         "run_not_found"

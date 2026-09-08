@@ -1,0 +1,612 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Artifact trust channel
+        required: true
+        type: choice
+        default: internal-unsigned
+        options:
+          - internal-unsigned
+          - production-signed
+
+permissions:
+  contents: read
+
+concurrency:
+  # Production signing and tags serialize across refs so monotonic-version and
+  # protected-key checks cannot race. Internal unsigned runs remain ref-scoped.
+  group: ${{ (github.event_name == 'push' || inputs.channel == 'production-signed') && 'release-production' || format('release-internal-{0}', github.ref) }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
+  TAURI_CLI_VERSION: "2.11.4"
+  NODE_VERSION: "24.18.0"
+  PYTHON_VERSION: "3.13.15"
+  RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'production-signed' }}
+
+jobs:
+  ci-gate:
+    name: Required CI gates
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release-readiness:
+    name: No incomplete implementation tasks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      release-version: ${{ steps.release-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify exact source commit and release traceability
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          python scripts/verify_source_commit.py --expected "$GITHUB_SHA"
+          if [[ "$RELEASE_CHANNEL" == "production-signed" ]]; then
+            python scripts/check_traceability.py --require-complete
+          else
+            python scripts/check_traceability.py
+          fi
+      - name: Bind one non-rollback SemVer to Cargo, Tauri, UI, and tag
+        id: release-version
+        shell: bash
+        run: |
+          arguments=()
+          if [[ "$RELEASE_CHANNEL" == "production-signed" ]]; then
+            git ls-remote --tags --refs origin > "$RUNNER_TEMP/remote-release-tags.txt"
+            arguments+=(--require-stable --require-not-older --tags-file "$RUNNER_TEMP/remote-release-tags.txt")
+          fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            arguments+=(--tag "$GITHUB_REF_NAME")
+          fi
+          version="$(python scripts/check_release_version.py "${arguments[@]}")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  assemble-unsigned:
+    name: Assemble unsigned installers and SBOM
+    runs-on: windows-2025
+    timeout-minutes: 35
+    needs: [ci-gate, release-readiness]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+          package-manager-cache: true
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
+      - name: Verify release checkout
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            python scripts/verify_source_commit.py --expected $env:GITHUB_SHA --tag $env:GITHUB_REF_NAME
+          } else {
+            python scripts/verify_source_commit.py --expected $env:GITHUB_SHA
+          }
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: music-folder-desktop-windows-unsigned
+          path: unsigned-bundle
+      - name: Enforce unsigned internal input policy
+        shell: pwsh
+        run: ./scripts/sign_windows_artifacts.ps1 -InputDirectory unsigned-bundle -OutputDirectory unsigned-verified -Mode Unsigned -ArtifactSet All
+      - name: Install pinned CycloneDX generator
+        run: cargo install cargo-cyclonedx --version "$env:CARGO_CYCLONEDX_VERSION" --locked
+      - name: Generate reproducible Rust and UI CycloneDX SBOMs
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fetch --locked
+          npm --prefix ui ci
+          New-Item -ItemType Directory -Path sbom | Out-Null
+          $buildEnvironment = @(Get-ChildItem -LiteralPath unsigned-bundle -Recurse -File -Filter "build-environment.json")
+          if ($buildEnvironment.Count -ne 1) {
+            throw "unsigned artifact must contain exactly one build-environment.json"
+          }
+          Copy-Item -LiteralPath $buildEnvironment[0].FullName -Destination sbom/windows-build-environment.json
+          $env:SOURCE_DATE_EPOCH = (git show -s --format=%ct HEAD).Trim()
+          $env:CARGO_NET_OFFLINE = "true"
+          cargo cyclonedx --manifest-path crates/desktop/Cargo.toml --format json --all --target x86_64-pc-windows-msvc --override-filename music-folder-desktop.cdx
+          python scripts/normalize_cyclonedx.py `
+            --input crates/desktop/music-folder-desktop.cdx.json `
+            --output sbom/rust.cdx.json `
+            --commit $env:GITHUB_SHA `
+            --epoch $env:SOURCE_DATE_EPOCH `
+            --document-id rust
+          npm --prefix ui sbom --sbom-format cyclonedx | Set-Content -LiteralPath $env:RUNNER_TEMP/ui-raw-1.cdx.json -Encoding utf8
+          npm --prefix ui sbom --sbom-format cyclonedx | Set-Content -LiteralPath $env:RUNNER_TEMP/ui-raw-2.cdx.json -Encoding utf8
+          python scripts/normalize_cyclonedx.py `
+            --input $env:RUNNER_TEMP/ui-raw-1.cdx.json `
+            --output sbom/ui.cdx.json `
+            --commit $env:GITHUB_SHA `
+            --epoch $env:SOURCE_DATE_EPOCH `
+            --document-id ui
+          python scripts/normalize_cyclonedx.py `
+            --input $env:RUNNER_TEMP/ui-raw-2.cdx.json `
+            --output $env:RUNNER_TEMP/ui-normalized-2.cdx.json `
+            --commit $env:GITHUB_SHA `
+            --epoch $env:SOURCE_DATE_EPOCH `
+            --document-id ui
+          if ((Get-FileHash -LiteralPath sbom/ui.cdx.json -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $env:RUNNER_TEMP/ui-normalized-2.cdx.json -Algorithm SHA256).Hash) {
+            throw "normalized UI SBOM differs across two generators runs"
+          }
+          $cyclonedx = (Get-Command cargo-cyclonedx).Source
+          python scripts/record_build_environment.py `
+            --output sbom/sbom-environment.json `
+            --role sbom-generation `
+            --commit $env:GITHUB_SHA `
+            --workflow-ref $env:GITHUB_WORKFLOW_REF `
+            --expected-node-version $env:NODE_VERSION `
+            --expected-python-version $env:PYTHON_VERSION `
+            --cargo-cyclonedx-path $cyclonedx `
+            --expected-cargo-cyclonedx-version $env:CARGO_CYCLONEDX_VERSION `
+            --require-runner-image
+          python -c "import json,pathlib; json.loads(pathlib.Path('sbom/rust.cdx.json').read_text(encoding='utf-8-sig'))"
+          python -c "import json,pathlib; json.loads(pathlib.Path('sbom/ui.cdx.json').read_text(encoding='utf-8-sig'))"
+          git diff --exit-code -- Cargo.lock ui/package-lock.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-windows-unsigned
+          path: unsigned-verified/**
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-sbom
+          path: sbom/**
+          if-no-files-found: error
+          retention-days: 30
+
+  test-signature-seam:
+    name: Test certificate and tamper detection
+    runs-on: windows-2025
+    timeout-minutes: 55
+    needs: assemble-unsigned
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-windows-unsigned
+          path: unsigned
+      - name: Self-sign copies, verify, and reject tampering
+        shell: pwsh
+        run: ./scripts/sign_windows_artifacts.ps1 -InputDirectory unsigned -OutputDirectory test-signed -Mode Test -ArtifactSet All
+      - name: Install pinned Tauri packager
+        shell: pwsh
+        run: cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked --root (Join-Path $env:RUNNER_TEMP "tauri-cli")
+      - name: Repackage the test-signed application and sign outer installers
+        shell: pwsh
+        run: |
+          $application = @(Get-ChildItem -LiteralPath test-signed -File -Filter "*.exe" | Where-Object Name -NotMatch "(?i)-setup\.exe$")
+          if ($application.Count -ne 1) { throw "test seam requires exactly one signed application executable" }
+          New-Item -ItemType Directory -Path target/release -Force | Out-Null
+          Copy-Item -LiteralPath $application[0].FullName -Destination target/release/music-folder-desktop.exe
+          $tauri = Join-Path $env:RUNNER_TEMP "tauri-cli/bin/cargo-tauri.exe"
+          Push-Location crates/desktop
+          try {
+            & $tauri bundle --ci --no-sign --bundles msi,nsis
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            Pop-Location
+          }
+          ./scripts/sign_windows_artifacts.ps1 -InputDirectory target/release/bundle -OutputDirectory test-repacked -Mode Test -ArtifactSet Installers
+          ./scripts/test_windows_installer.ps1 -BundleDirectory test-repacked -SignaturePolicy Present -ExpectedSignerSubject "CN=Music Folder Builder CI Test Only"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-windows-test-signed-not-for-distribution
+          path: test-repacked/**
+          if-no-files-found: error
+          retention-days: 3
+
+  production-sign:
+    name: Production signing boundary
+    if: ${{ github.event_name == 'push' || inputs.channel == 'production-signed' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    needs: [release-readiness, assemble-unsigned, test-signature-seam]
+    environment: production-signing
+    env:
+      RELEASE_VERSION: ${{ needs.release-readiness.outputs.release-version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-windows-unsigned
+          path: unsigned
+      - name: Install pinned Tauri packager without signing secrets
+        shell: pwsh
+        run: cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked --root (Join-Path $env:RUNNER_TEMP "tauri-cli")
+      - name: Sign only the application inside the protected boundary
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGNING_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) {
+            throw "WINDOWS_SIGNING_PFX_BASE64 is required for production-signed releases"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD)) {
+            throw "WINDOWS_SIGNING_PFX_PASSWORD is required for production-signed releases"
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "windows-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+            ./scripts/sign_windows_artifacts.ps1 `
+              -InputDirectory unsigned `
+              -OutputDirectory production-application `
+              -Mode Production `
+              -ArtifactSet Application `
+              -PfxPath $pfx `
+              -PfxPassword $env:SIGNING_PFX_PASSWORD `
+              -TimestampUrl $env:SIGNING_TIMESTAMP_URL
+          }
+          finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+      - name: Repackage the signed application without signing secrets
+        shell: pwsh
+        run: |
+          $application = @(Get-ChildItem -LiteralPath production-application -File -Filter "*.exe")
+          if ($application.Count -ne 1) { throw "production signing requires exactly one application executable" }
+          New-Item -ItemType Directory -Path target/release -Force | Out-Null
+          Copy-Item -LiteralPath $application[0].FullName -Destination target/release/music-folder-desktop.exe
+          $tauri = Join-Path $env:RUNNER_TEMP "tauri-cli/bin/cargo-tauri.exe"
+          Push-Location crates/desktop
+          try {
+            & $tauri bundle --ci --no-sign --bundles msi,nsis
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Sign outer installers inside the protected boundary
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGNING_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+          EXPECTED_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER_SUBJECT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_PUBLISHER)) {
+            throw "WINDOWS_SIGNING_PUBLISHER_SUBJECT must be an exact certificate Subject"
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "windows-signing.pfx"
+          $importedCertificate = $null
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+            ./scripts/sign_windows_artifacts.ps1 `
+              -InputDirectory target/release/bundle `
+              -OutputDirectory production-signed `
+              -Mode Production `
+              -ArtifactSet Installers `
+              -PfxPath $pfx `
+              -PfxPassword $env:SIGNING_PFX_PASSWORD `
+              -TimestampUrl $env:SIGNING_TIMESTAMP_URL
+            Copy-Item -LiteralPath scripts/install_verified_release.ps1 -Destination production-signed/install_verified_release.ps1
+            $securePassword = ConvertTo-SecureString -String $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+            $importedCertificate = @(
+              Import-PfxCertificate `
+                -FilePath $pfx `
+                -CertStoreLocation Cert:\CurrentUser\My `
+                -Password $securePassword |
+                Where-Object HasPrivateKey |
+                Where-Object { $_.Subject -eq $env:EXPECTED_PUBLISHER }
+            )
+            if ($importedCertificate.Count -ne 1) {
+              throw "production PFX must contain exactly one matching private-key certificate"
+            }
+            $launcherSignature = Set-AuthenticodeSignature `
+              -LiteralPath production-signed/install_verified_release.ps1 `
+              -Certificate $importedCertificate[0] `
+              -TimestampServer $env:SIGNING_TIMESTAMP_URL `
+              -HashAlgorithm SHA256
+            if ($launcherSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or $null -eq $launcherSignature.TimeStamperCertificate) {
+              throw "production launcher signing/timestamp verification failed: $($launcherSignature.Status)"
+            }
+          }
+          finally {
+            foreach ($certificate in @($importedCertificate)) {
+              if ($null -ne $certificate) {
+                Remove-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $certificate.Thumbprint) -Force -ErrorAction SilentlyContinue
+              }
+            }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+      - name: Verify trusted outer and installed application signatures
+        shell: pwsh
+        run: ./scripts/test_windows_installer.ps1 -BundleDirectory production-signed -SignaturePolicy Trusted
+      - name: Bind the final packaging runner and pinned toolchain
+        shell: pwsh
+        run: |
+          $tauri = Join-Path $env:RUNNER_TEMP "tauri-cli/bin/cargo-tauri.exe"
+          python scripts/record_build_environment.py `
+            --output production-signed/windows-package-environment.json `
+            --role windows-installer-package `
+            --commit $env:GITHUB_SHA `
+            --workflow-ref $env:GITHUB_WORKFLOW_REF `
+            --expected-node-version $env:NODE_VERSION `
+            --expected-python-version $env:PYTHON_VERSION `
+            --tauri-cli-path $tauri `
+            --expected-tauri-cli-version $env:TAURI_CLI_VERSION `
+            --require-runner-image
+      - name: Enforce production publisher and pre-install verification policy
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER_SUBJECT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_PUBLISHER)) {
+            throw "WINDOWS_SIGNING_PUBLISHER_SUBJECT must be an exact certificate Subject"
+          }
+          python scripts/write_release_metadata.py `
+            --bundle-dir production-signed `
+            --output-dir production-policy-release `
+            --commit $env:GITHUB_SHA `
+            --version $env:RELEASE_VERSION `
+            --channel production-signed `
+            --extra-file production-signed/install_verified_release.ps1 `
+            --environment-file production-signed/windows-package-environment.json
+          foreach ($installer in @(Get-ChildItem -LiteralPath production-policy-release -File | Where-Object { $_.Extension -eq ".msi" -or $_.Name -match "(?i)-setup\.exe$" })) {
+            & (Resolve-Path "production-policy-release/install_verified_release.ps1").Path `
+              -ReleaseDirectory production-policy-release `
+              -InstallerName $installer.Name `
+              -ExpectedPublisher $env:EXPECTED_PUBLISHER `
+              -VerifyOnly
+          }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-windows-production-signed
+          path: production-signed/**
+          if-no-files-found: error
+          retention-days: 30
+
+  finalize:
+    name: Checksums, provenance, and release artifact
+    if: >-
+      always() &&
+      needs.assemble-unsigned.result == 'success' &&
+      needs.test-signature-seam.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.channel == 'internal-unsigned' && needs.production-sign.result == 'skipped') ||
+       ((github.event_name == 'push' || inputs.channel == 'production-signed') && needs.production-sign.result == 'success'))
+    runs-on: windows-2025
+    timeout-minutes: 35
+    needs: [release-readiness, assemble-unsigned, test-signature-seam, production-sign]
+    env:
+      RELEASE_VERSION: ${{ needs.release-readiness.outputs.release-version }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ${{ env.RELEASE_CHANNEL == 'production-signed' && 'release-windows-production-signed' || 'release-windows-unsigned' }}
+          path: selected-installers
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-sbom
+          path: sbom
+      - name: Re-verify channel policy after artifact transfer
+        shell: pwsh
+        run: |
+          $mode = if ($env:RELEASE_CHANNEL -eq "production-signed") { "VerifySigned" } else { "Unsigned" }
+          ./scripts/sign_windows_artifacts.ps1 -InputDirectory selected-installers -OutputDirectory verified-installers -Mode $mode
+          if ($env:RELEASE_CHANNEL -eq "production-signed") {
+            ./scripts/test_windows_installer.ps1 -BundleDirectory verified-installers -SignaturePolicy Trusted
+            $launcher = @(Get-ChildItem -LiteralPath selected-installers -Recurse -File -Filter "install_verified_release.ps1")
+            if ($launcher.Count -ne 1) { throw "production artifact must contain one signed release launcher" }
+            $launcherSignature = Get-AuthenticodeSignature -LiteralPath $launcher[0].FullName
+            if ($launcherSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or $null -eq $launcherSignature.TimeStamperCertificate) {
+              throw "transferred release launcher is not trusted and timestamped"
+            }
+            $installerSubjects = @(
+              Get-ChildItem -LiteralPath verified-installers -File |
+                ForEach-Object { (Get-AuthenticodeSignature -LiteralPath $_.FullName).SignerCertificate.Subject } |
+                Sort-Object -Unique
+            )
+            if ($installerSubjects.Count -ne 1 -or $installerSubjects[0] -ne $launcherSignature.SignerCertificate.Subject) {
+              throw "launcher and installer publisher subjects differ after transfer"
+            }
+          }
+      - name: Create and verify deterministic metadata
+        shell: pwsh
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/verify_source_commit.py --expected $env:GITHUB_SHA
+          $launcher = if ($env:RELEASE_CHANNEL -eq "production-signed") {
+            (Resolve-Path "selected-installers/install_verified_release.ps1").Path
+          } else {
+            (Resolve-Path "scripts/install_verified_release.ps1").Path
+          }
+          $arguments = @(
+            "scripts/write_release_metadata.py",
+            "--bundle-dir", "verified-installers",
+            "--output-dir", "release",
+            "--commit", $env:GITHUB_SHA,
+            "--version", $env:RELEASE_VERSION,
+            "--channel", $env:RELEASE_CHANNEL,
+            "--extra-file", (Resolve-Path "docs/release/cli-envelope.v1.schema.json").Path,
+            "--extra-file", (Resolve-Path "docs/release/cli-event.v1.schema.json").Path,
+            "--extra-file", $launcher
+          )
+          foreach ($sbom in Get-ChildItem -LiteralPath sbom -Recurse -File -Filter "*.cdx.json") {
+            $arguments += @("--extra-file", $sbom.FullName)
+          }
+          $environments = @(
+            Get-Item -LiteralPath @(
+              "sbom/windows-build-environment.json",
+              "sbom/sbom-environment.json"
+            )
+          )
+          if ($env:RELEASE_CHANNEL -eq "production-signed") {
+            $packageEnvironment = @(Get-ChildItem -LiteralPath selected-installers -Recurse -File -Filter "windows-package-environment.json")
+            if ($packageEnvironment.Count -ne 1) {
+              throw "production artifact must contain exactly one final packaging environment"
+            }
+            $environments += $packageEnvironment[0]
+          }
+          foreach ($environment in $environments) {
+            $arguments += @("--environment-file", $environment.FullName)
+          }
+          python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_release_metadata.py --release-dir release --commit $env:GITHUB_SHA --channel $env:RELEASE_CHANNEL --repository-root .
+      - name: Attest build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Attest Rust CycloneDX SBOM to installers
+        id: rust-sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/INSTALLER-SHA256SUMS
+          sbom-path: release/rust.cdx.json
+      - name: Attest UI CycloneDX SBOM to installers
+        id: ui-sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/INSTALLER-SHA256SUMS
+          sbom-path: release/ui.cdx.json
+      - name: Preserve Sigstore bundles with release metadata
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath '${{ steps.provenance.outputs.bundle-path }}' -Destination release/provenance.sigstore.json
+          Copy-Item -LiteralPath '${{ steps.rust-sbom.outputs.bundle-path }}' -Destination release/rust-sbom.sigstore.json
+          Copy-Item -LiteralPath '${{ steps.ui-sbom.outputs.bundle-path }}' -Destination release/ui-sbom.sigstore.json
+          $checksumLines = @()
+          foreach ($bundle in Get-ChildItem -LiteralPath release -File -Filter "*.sigstore.json" | Sort-Object Name) {
+            $digest = (Get-FileHash -LiteralPath $bundle.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $checksumLines += "$digest *$($bundle.Name)"
+          }
+          $checksumPath = (Resolve-Path "release/SHA256SUMS").Path
+          [IO.File]::AppendAllText($checksumPath, (($checksumLines -join "`n") + "`n"), [Text.Encoding]::ASCII)
+          python scripts/verify_release_metadata.py --release-dir release --commit $env:GITHUB_SHA --channel $env:RELEASE_CHANNEL --repository-root .
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: music-folder-release-${{ github.sha }}
+          path: release/**
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-tag:
+    name: Publish immutable tagged release
+    # Public GitHub Releases are produced only by the protected, signed tag-push
+    # path. A workflow_dispatch run may validate an existing tag, but it must
+    # never turn the internal-unsigned channel into a public release.
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && needs.finalize.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: finalize
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Re-resolve tag immediately before publication
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/verify_source_commit.py --expected "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
+          git ls-remote --tags --refs origin > "$RUNNER_TEMP/remote-release-tags.txt"
+          python scripts/check_release_version.py --tag "$GITHUB_REF_NAME" --require-stable --require-not-older --tags-file "$RUNNER_TEMP/remote-release-tags.txt"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: music-folder-release-${{ github.sha }}
+          path: release
+      - name: Re-verify production channel before publication
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/verify_release_metadata.py \
+            --release-dir release \
+            --commit "$GITHUB_SHA" \
+            --channel production-signed \
+            --repository-root .
+      - name: Refuse replacement and publish tag artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd release && sha256sum --check SHA256SUMS)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to replace existing release $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          mapfile -t files < <(find release -type f -print | sort)
+          test "${#files[@]}" -gt 0
+          read -r object_type object_sha < <(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type + " " + .object.sha'
+          )
+          while [[ "$object_type" == "tag" ]]; do
+            read -r object_type object_sha < <(
+              gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" --jq '.object.type + " " + .object.sha'
+            )
+          done
+          if [[ "$object_type" != "commit" || "$object_sha" != "$GITHUB_SHA" ]]; then
+            echo "Remote tag moved: expected $GITHUB_SHA, got $object_type $object_sha" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --title "Music Folder Builder $GITHUB_REF_NAME" --generate-notes

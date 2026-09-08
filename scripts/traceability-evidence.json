@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "execution_profiles": [
+    {
+      "name": "rust-workspace-tests",
+      "path_prefix": "crates/",
+      "path_suffix": ".rs",
+      "kind": "rust-test",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "cargo test --frozen --workspace"
+    },
+    {
+      "name": "ui-contract-tests",
+      "path": "ui/tests/ui.contract.test.mjs",
+      "kind": "ui-test",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "npm --prefix ui test"
+    },
+    {
+      "name": "benchmark-policy-gate",
+      "path": "scripts/check_benchmark.py",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "python scripts/check_benchmark.py"
+    },
+    {
+      "name": "cli-schema-gate",
+      "path": "scripts/check_cli_schema.py",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "python scripts/check_cli_schema.py"
+    },
+    {
+      "name": "windows-bundle-inspection",
+      "path": "scripts/inspect_windows_bundle.ps1",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "./scripts/inspect_windows_bundle.ps1"
+    },
+    {
+      "name": "cli-windows-long-path-smoke",
+      "path": "scripts/test_cli_long_path.ps1",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "./scripts/test_cli_long_path.ps1"
+    },
+    {
+      "name": "release-metadata-self-test",
+      "path": "scripts/test_release_metadata.py",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "python scripts/test_release_metadata.py"
+    },
+    {
+      "name": "installer-policy-self-test",
+      "path": "scripts/test_install_verified_release.ps1",
+      "kind": "script",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "./scripts/test_install_verified_release.ps1"
+    },
+    {
+      "name": "release-workflow",
+      "path": ".github/workflows/release.yml",
+      "kind": "workflow",
+      "gate_path": ".github/workflows/release.yml",
+      "gate_contains": "workflow_dispatch:"
+    }
+  ],
+  "claims": [
+    {
+      "requirements": "REQ-SAF-001〜002",
+      "claim": "workflow transition unit test、snapshot tamper integration test",
+      "artifacts": [
+        { "path": "crates/core/src/usecases.rs", "contains": "plan_snapshot_hash_changes_when_authorized_target_changes" },
+        { "path": "crates/infra/tests/plan_authorization.rs", "contains": "plan_context_and_lossless_target_are_part_of_authorization_hash" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-003",
+      "claim": "dry-run/Apply parity matrix、filesystem no-mutation test",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "persisted_plan_drives_dry_run_apply_verify_and_rollback" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-004",
+      "claim": "target race、root confinement、existing-target fault test",
+      "artifacts": [
+        { "path": "crates/infra/tests/atomic_no_replace.rs", "contains": "publish_race_never_overwrites_existing_target_or_deletes_source" },
+        { "path": "crates/core/src/path_policy.rs", "contains": "manual_target_comparison_is_component_based_not_string_prefix_based" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-005",
+      "claim": "crash-point recovery、orphan run終端、migration test",
+      "artifacts": [
+        { "path": "crates/infra/tests/mutation_journal.rs", "contains": "abandoned_journal_is_recovered_and_stale_owner_is_fenced" },
+        { "path": "crates/infra/tests/sqlite_snapshot_migration.rs", "contains": "legacy_database_is_transactionally_upgraded_and_backfilled" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-006",
+      "claim": "eligibility/risk matrix、metadata panic regression test",
+      "artifacts": [
+        { "path": "crates/core/src/domain.rs", "contains": "risk_severity_does_not_make_metadata_warning_blocking" },
+        { "path": "crates/core/src/usecases.rs", "contains": "duplicate_template_with_missing_metadata_does_not_panic" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-007",
+      "claim": "mutation各段階のprocess-kill/resume/rollback test",
+      "artifacts": [
+        { "path": "crates/infra/tests/fault_boundary_regression.rs", "contains": "content_verified_crash_is_fenced_then_recovered_from_the_durable_journal" }
+      ]
+    },
+    {
+      "requirements": "REQ-SAF-008",
+      "claim": "CLI/Desktop 2-process競合、heartbeat/fencing test",
+      "artifacts": [
+        { "path": "crates/infra/tests/mutation_journal.rs", "contains": "nested_target_roots_are_mutually_exclusive" },
+        { "path": "crates/infra/tests/fault_boundary_regression.rs", "contains": "sqlite_busy_fails_before_a_run_or_mutation_and_releases_the_process_lock" }
+      ]
+    },
+    {
+      "requirements": "REQ-SCN-001〜003",
+      "claim": "scan/cache/cancel integration test、cache version migration、benchmark",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "cancelled_scan_commits_received_work_and_records_cancelled_status" },
+        { "path": "crates/infra/tests/sqlite_snapshot_migration.rs", "contains": "legacy_database_is_transactionally_upgraded_and_backfilled" },
+        { "path": "crates/cli/tests/cli_process.rs", "contains": "benchmark_reports_three_iteration_medians_plan_apply_and_peak_rss" }
+      ]
+    },
+    {
+      "requirements": "REQ-SCN-004",
+      "claim": "Scan A/B分離、source差替え、同size改変test",
+      "artifacts": [
+        { "path": "crates/infra/tests/sqlite_snapshot_migration.rs", "contains": "completed_scan_is_immutable_when_a_later_scan_observes_the_same_path" },
+        { "path": "crates/infra/tests/fault_boundary_regression.rs", "contains": "same_size_source_replacement_is_rejected_and_never_enters_the_journal" }
+      ]
+    },
+    {
+      "requirements": "REQ-PLN-001",
+      "claim": "path traversal/UNC/device/Unicode table test、manifest・long path Windows test",
+      "artifacts": [
+        { "path": "crates/core/src/path_policy.rs", "contains": "relative_component_table_rejects_traversal_prefixes_and_windows_names" },
+        { "path": "crates/desktop/tests/manifest_contract.rs", "contains": "windows_manifest_keeps_common_controls_and_enables_long_paths" },
+        { "path": "crates/cli/tests/manifest_contract.rs", "contains": "cli_windows_manifest_keeps_common_controls_and_enables_long_paths" },
+        { "path": "scripts/test_cli_long_path.ps1", "contains": "CLI artifact with >260-character SQLite path smoke passed" }
+      ]
+    },
+    {
+      "requirements": "REQ-PLN-002〜003",
+      "claim": "naming/衝突golden test、SQLite adapter contract、UI behavior test",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "conflict_detail_lists_every_source_and_revision_rechecks_the_group" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "conflict command boundary exposes deterministic failure and retry" }
+      ]
+    },
+    {
+      "requirements": "REQ-PLN-004",
+      "claim": "create/revise parity、manual target confinement、snapshot integration test",
+      "artifacts": [
+        { "path": "crates/infra/tests/plan_authorization.rs", "contains": "revision_revalidates_manual_target_and_remains_executable" },
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "manual_target_creates_immutable_child_plan" }
+      ]
+    },
+    {
+      "requirements": "REQ-PLN-005",
+      "claim": "10万item RSS/時間benchmark、page境界決定性test",
+      "artifacts": [
+        { "path": "crates/infra/tests/bounded_plan_build.rs", "contains": "high_cardinality_plan_is_page_boundary_deterministic_and_batch_bounded" },
+        { "path": "scripts/check_benchmark.py", "contains": "minimum_iterations" }
+      ]
+    },
+    {
+      "requirements": "REQ-MDA-001〜002、REQ-AST-001〜002",
+      "claim": "metadata fixture/matrix、画像候補workflow、panic regression test",
+      "artifacts": [
+        { "path": "crates/infra/tests/metadata_fixtures.rs", "contains": "reads_japanese_tags_from_each_supported_format" },
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "ambiguous_image_persists_every_destination_candidate_and_music_source" },
+        { "path": "crates/core/src/usecases.rs", "contains": "duplicate_template_with_missing_metadata_does_not_panic" }
+      ]
+    },
+    {
+      "requirements": "REQ-APL-001",
+      "claim": "same/cross-volume race、partial copy、disk-full test",
+      "artifacts": [
+        { "path": "crates/infra/tests/atomic_no_replace.rs", "contains": "publish_race_never_overwrites_existing_target_or_deletes_source" },
+        { "path": "crates/core/src/usecases.rs", "contains": "cross_volume_verification_failure_never_deletes_source" }
+      ]
+    },
+    {
+      "requirements": "REQ-APL-002",
+      "claim": "source replacement/content mismatch test",
+      "artifacts": [
+        { "path": "crates/infra/tests/fault_boundary_regression.rs", "contains": "same_size_source_replacement_is_rejected_and_never_enters_the_journal" }
+      ]
+    },
+    {
+      "requirements": "REQ-APL-003",
+      "claim": "Apply/Rollback直前reparse差替えWindows test",
+      "artifacts": [
+        { "path": "crates/infra/tests/fault_boundary_regression.rs", "contains": "target_parent_reparse_swap_is_rejected_without_escaping_the_target_root" },
+        { "path": "crates/infra/tests/windows_paths.rs", "contains": "reparse_directory_is_not_followed_by_default" }
+      ]
+    },
+    {
+      "requirements": "REQ-VRF-001、REQ-RBK-001",
+      "claim": "Apply後/rollback後verify、複数attempt、reverse rollback fault test",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "persisted_plan_drives_dry_run_apply_verify_and_rollback" },
+        { "path": "crates/core/src/usecases.rs", "contains": "rollback_processes_successful_operations_in_reverse_sequence" }
+      ]
+    },
+    {
+      "requirements": "REQ-ERR-001",
+      "claim": "typed error unit test、CLI JSON/exit code golden、redaction snapshot",
+      "artifacts": [
+        { "path": "crates/cli/tests/cli_process.rs", "contains": "invalid_plan_toml_is_usage_error_two_in_json_mode" },
+        { "path": "crates/infra/tests/diagnostic_retention.rs", "contains": "diagnostic_export_redacts_sensitive_paths_and_secret_fields_and_verifies_digest" }
+      ]
+    },
+    {
+      "requirements": "REQ-OBS-001",
+      "claim": "repository/metrics integration、Desktop startup、benchmark",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "persisted_plan_drives_dry_run_apply_verify_and_rollback" },
+        { "path": "crates/cli/tests/cli_process.rs", "contains": "benchmark_reports_three_iteration_medians_plan_apply_and_peak_rss" }
+      ]
+    },
+    {
+      "requirements": "REQ-OBS-002",
+      "claim": "verify/rollback複数attemptと履歴query/migration test",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "persisted_plan_drives_dry_run_apply_verify_and_rollback" },
+        { "path": "crates/infra/tests/sqlite_snapshot_migration.rs", "contains": "legacy_database_is_transactionally_upgraded_and_backfilled" }
+      ]
+    },
+    {
+      "requirements": "REQ-OBS-003",
+      "claim": "retention/load、cleanup保護、diagnostic export/redaction test",
+      "artifacts": [
+        { "path": "crates/infra/tests/diagnostic_retention.rs", "contains": "retention_is_bounded_and_preserves_recovery_evidence_until_archive" },
+        { "path": "crates/infra/tests/diagnostic_retention.rs", "contains": "diagnostic_export_redacts_sensitive_paths_and_secret_fields_and_verifies_digest" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-001",
+      "claim": "cursor repository、stale page、UI behavior/performance test",
+      "artifacts": [
+        { "path": "crates/infra/tests/workflow_integration.rs", "contains": "plan_moves_companion_image_to_music_target_directory" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "workflow reducer ignores stale generations" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-002",
+      "claim": "workflow reducer、stale job、confirmation behavior test",
+      "artifacts": [
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "workflow reducer ignores stale generations" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "native modal behavior handles initial focus" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-003〜004",
+      "claim": "history/attempt repository、retention、UI behavior test",
+      "artifacts": [
+        { "path": "crates/infra/tests/history_archive.rs", "contains": "archive_refuses_active_or_held_workflow_and_detects_later_tampering" },
+        { "path": "crates/infra/tests/diagnostic_retention.rs", "contains": "retention_is_bounded_and_preserves_recovery_evidence_until_archive" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "native modal behavior handles initial focus" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-005",
+      "claim": "rollback confirmation、stale execution、keyboard test",
+      "artifacts": [
+        { "path": "crates/cli/tests/cli_process.rs", "contains": "rollback_execute_without_exact_confirmation_is_blocked_before_database_open" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "native modal behavior handles initial focus, Escape, return focus, failure, and retry" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-006",
+      "claim": "new Scan/Plan/revisionで旧execution無効化、async stale response test",
+      "artifacts": [
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "workflow reducer ignores stale generations" }
+      ]
+    },
+    {
+      "requirements": "REQ-UI-007",
+      "claim": "keyboard/focus/aria component test",
+      "artifacts": [
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "confirmation and target edit dialogs retain their ARIA and confirmation markup" },
+        { "path": "ui/tests/ui.contract.test.mjs", "contains": "native modal behavior handles initial focus" }
+      ]
+    },
+    {
+      "requirements": "REQ-CLI-001",
+      "claim": "CLI process JSON schema/exit code/config/confirmation golden test",
+      "artifacts": [
+        { "path": "crates/cli/tests/cli_process.rs", "contains": "json_history_list_emits_only_a_versioned_success_envelope" },
+        { "path": "scripts/check_cli_schema.py", "contains": "EXIT_CODES" }
+      ]
+    },
+    {
+      "requirements": "REQ-SEC-001",
+      "claim": "command argument tamper、CSP inspection、path confinement test",
+      "artifacts": [
+        { "path": "scripts/inspect_windows_bundle.ps1", "contains": "production CSP must not allow unsafe-eval or unsafe-inline" },
+        { "path": "crates/core/src/path_policy.rs", "contains": "rejects_relative_drive_relative_device_and_ambiguous_roots" }
+      ]
+    },
+    {
+      "requirements": "REQ-REL-001",
+      "claim": "Windows artifact/manifest inspection、SBOM/checksum/provenance、test-signature verification",
+      "artifacts": [
+        { "path": ".github/workflows/release.yml", "contains": "Enforce production publisher and pre-install verification policy" },
+        { "path": "scripts/inspect_windows_bundle.ps1", "contains": "Assert-EmbeddedWindowsManifest $resolvedCliExecutable" },
+        { "path": "scripts/test_release_metadata.py", "contains": "tamper/omission/escape negatives" },
+        { "path": "scripts/test_install_verified_release.ps1", "contains": "verified installer policy unit tests passed" }
+      ]
+    }
+  ]
+}

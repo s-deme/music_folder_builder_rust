@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "execution_profiles": [
+    {
+      "name": "fixture-rust-tests",
+      "path_prefix": "crates/",
+      "path_suffix": ".rs",
+      "kind": "rust-test",
+      "gate_path": ".github/workflows/ci.yml",
+      "gate_contains": "cargo test --workspace"
+    }
+  ],
+  "claims": [
+    {
+      "requirements": "REQ-NEG-001",
+      "claim": "TODO",
+      "artifacts": [
+        { "path": "scripts/dead_evidence.py", "contains": "claimed_behavior" },
+        { "path": "crates/example/src/lib.rs", "contains": "claimed_behavior" }
+      ]
+    }
+  ]
+}

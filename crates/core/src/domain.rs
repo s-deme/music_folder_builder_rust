@@ -13,6 +13,8 @@ pub enum RunStatus {
     Failed,
     Cancelled,
     Partial,
+    RecoveryRequired,
+    Archived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,10 +32,152 @@ pub enum Risk {
     MetadataMissing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueSeverity {
+    Warning,
+    Blocking,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionDisposition {
+    Executable,
+    Skip,
+    #[default]
+    Blocked,
+}
+
+/// Version of the persisted `NamingRules` authorization surface.
+///
+/// This is deliberately independent from the Plan snapshot encoder version:
+/// adding a rule changes how a target is interpreted even when no Plan item
+/// column changes.
+pub const NAMING_RULES_SCHEMA_VERSION: u32 = 1;
+pub const PLAN_ISSUES_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum NamingRulesSchemaError {
+    #[error("legacy naming-rules schema is not executable")]
+    Legacy,
+    #[error("unsupported naming-rules schema version: {found} (supported: {supported})")]
+    Unsupported { found: u32, supported: u32 },
+}
+
+pub const fn require_current_naming_rules_schema(
+    version: u32,
+) -> Result<(), NamingRulesSchemaError> {
+    if version == NAMING_RULES_SCHEMA_VERSION {
+        Ok(())
+    } else if version == 0 {
+        Err(NamingRulesSchemaError::Legacy)
+    } else {
+        Err(NamingRulesSchemaError::Unsupported {
+            found: version,
+            supported: NAMING_RULES_SCHEMA_VERSION,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanIssueCode {
+    InvalidTarget,
+    PathTooLong,
+    Conflict,
+    MetadataMissing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanIssue {
+    pub severity: IssueSeverity,
+    pub code: PlanIssueCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl PlanIssue {
+    pub fn from_diagnostic(
+        risk: Risk,
+        detail: Option<&str>,
+        disposition: ExecutionDisposition,
+    ) -> Option<Self> {
+        let code = match risk {
+            Risk::None => return None,
+            Risk::InvalidTarget => PlanIssueCode::InvalidTarget,
+            Risk::PathTooLong => PlanIssueCode::PathTooLong,
+            Risk::Conflict => PlanIssueCode::Conflict,
+            Risk::MetadataMissing => PlanIssueCode::MetadataMissing,
+        };
+        let severity = if disposition == ExecutionDisposition::Blocked {
+            IssueSeverity::Blocking
+        } else {
+            risk.issue_severity().unwrap_or(IssueSeverity::Warning)
+        };
+        Some(Self {
+            severity,
+            code,
+            detail: detail.map(str::to_owned),
+        })
+    }
+}
+
+impl Risk {
+    /// Returns the severity of this diagnostic independently from an item's action.
+    ///
+    /// `MetadataMissing` is intentionally a warning: naming rules may explicitly
+    /// allow a fallback target for a file without readable metadata.
+    pub const fn issue_severity(self) -> Option<IssueSeverity> {
+        match self {
+            Self::None => None,
+            Self::MetadataMissing => Some(IssueSeverity::Warning),
+            Self::InvalidTarget | Self::PathTooLong | Self::Conflict => {
+                Some(IssueSeverity::Blocking)
+            }
+        }
+    }
+
+    pub const fn is_blocking(self) -> bool {
+        matches!(self.issue_severity(), Some(IssueSeverity::Blocking))
+    }
+
+    pub const fn execution_disposition(self, action: PlanAction) -> ExecutionDisposition {
+        if matches!(action, PlanAction::Skip) {
+            ExecutionDisposition::Skip
+        } else if self.is_blocking() {
+            ExecutionDisposition::Blocked
+        } else {
+            ExecutionDisposition::Executable
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileFingerprint {
     pub size_bytes: u64,
     pub mtime_ns: i128,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    #[serde(default)]
+    pub file_identity: Option<String>,
+    #[serde(default = "default_fingerprint_version")]
+    pub version: u16,
+}
+
+const fn default_fingerprint_version() -> u16 {
+    1
+}
+
+impl FileFingerprint {
+    pub const fn legacy(size_bytes: u64, mtime_ns: i128) -> Self {
+        Self {
+            size_bytes,
+            mtime_ns,
+            content_sha256: None,
+            file_identity: None,
+            version: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +207,7 @@ pub struct ScannedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NamingRules {
     pub artist_dir_template: String,
     pub album_dir_template: String,
@@ -73,6 +218,8 @@ pub struct NamingRules {
     pub use_source_image_filename: bool,
     #[serde(default)]
     pub allow_missing_metadata: bool,
+    #[serde(default)]
+    pub allow_long_paths: bool,
     #[serde(default)]
     pub duplicate_strategy: DuplicateStrategy,
 }
@@ -98,6 +245,7 @@ impl Default for NamingRules {
             use_source_filename: false,
             use_source_image_filename: false,
             allow_missing_metadata: false,
+            allow_long_paths: false,
             duplicate_strategy: DuplicateStrategy::Skip,
         }
     }
@@ -375,10 +523,73 @@ pub struct PlanItem {
     pub file: ScannedFile,
     pub target: Option<PathBuf>,
     pub action: PlanAction,
+    /// The authoritative mutation eligibility. It must never be inferred from
+    /// `risk`, which is diagnostic and may be only a warning.
+    #[serde(default)]
+    pub disposition: ExecutionDisposition,
     pub risk: Risk,
     pub reason: Option<String>,
     #[serde(default)]
+    pub issues: Vec<PlanIssue>,
+    #[serde(default)]
     pub conflict_candidates: Vec<PlanConflictCandidate>,
+}
+
+impl PlanItem {
+    pub const fn execution_disposition(&self) -> ExecutionDisposition {
+        self.disposition
+    }
+
+    pub fn set_outcome(
+        &mut self,
+        action: PlanAction,
+        disposition: ExecutionDisposition,
+        risk: Risk,
+        reason: Option<String>,
+    ) {
+        self.action = action;
+        self.disposition = disposition;
+        self.risk = risk;
+        self.reason = reason;
+        self.issues = PlanIssue::from_diagnostic(risk, self.reason.as_deref(), disposition)
+            .into_iter()
+            .collect();
+    }
+
+    pub fn validate_execution_contract(&self) -> Result<(), &'static str> {
+        match self.disposition {
+            ExecutionDisposition::Executable => {
+                if self.action != PlanAction::Move {
+                    return Err("executable_plan_item_action_invalid");
+                }
+                if self.target.is_none() {
+                    return Err("executable_plan_item_target_missing");
+                }
+                if self
+                    .issues
+                    .iter()
+                    .any(|issue| issue.severity == IssueSeverity::Blocking)
+                {
+                    return Err("executable_plan_item_has_blocking_issue");
+                }
+            }
+            ExecutionDisposition::Skip => {
+                if self.action != PlanAction::Skip {
+                    return Err("skipped_plan_item_action_invalid");
+                }
+            }
+            ExecutionDisposition::Blocked => {
+                if !self
+                    .issues
+                    .iter()
+                    .any(|issue| issue.severity == IssueSeverity::Blocking)
+                {
+                    return Err("blocked_plan_item_issue_missing");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -388,8 +599,19 @@ pub struct ApplyItem {
     pub source: PathBuf,
     pub target: Option<PathBuf>,
     pub action: PlanAction,
+    pub disposition: ExecutionDisposition,
     pub risk: Risk,
     pub reason: Option<String>,
+    pub issues: Vec<PlanIssue>,
+    pub source_fingerprint: Option<FileFingerprint>,
+    pub target_root: Option<PathBuf>,
+    pub allow_long_paths: bool,
+}
+
+impl ApplyItem {
+    pub const fn execution_disposition(&self) -> ExecutionDisposition {
+        self.disposition
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +625,8 @@ pub struct OperationLog {
     pub error: Option<String>,
     pub source_deleted: bool,
     pub expected_size: Option<u64>,
+    pub expected_content_sha256: Option<String>,
+    pub expected_file_identity: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -413,6 +637,8 @@ pub struct VerifyItem {
     pub target: Option<PathBuf>,
     pub action: OperationAction,
     pub expected_size: Option<u64>,
+    pub expected_content_sha256: Option<String>,
+    pub expected_file_identity: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -425,6 +651,45 @@ pub enum DomainError {
     PlanNotApplicable,
     #[error("source and target are identical")]
     SamePath,
+    #[error("target root must be a fully-qualified absolute path")]
+    TargetRootNotAbsolute,
+    #[error("device and extended-length path prefixes are not accepted")]
+    AmbiguousPathPrefix,
+    #[error("target path is outside the configured target root")]
+    TargetOutsideRoot,
+    #[error("target path must identify an item below the target root")]
+    TargetEqualsRoot,
+    #[error("path cannot be represented losslessly by this platform")]
+    PathEncodingUnsupported,
+    #[error("invalid target path component: {reason}")]
+    InvalidPathComponent { reason: PathComponentViolation },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Error)]
+#[serde(rename_all = "snake_case")]
+pub enum PathComponentViolation {
+    #[error("component is empty")]
+    Empty,
+    #[error("absolute or prefixed component is not allowed")]
+    AbsoluteOrPrefixed,
+    #[error("current-directory component is not allowed")]
+    CurrentDirectory,
+    #[error("parent-directory component is not allowed")]
+    ParentDirectory,
+    #[error("a path separator is not allowed inside a component")]
+    Separator,
+    #[error("NUL is not allowed")]
+    Nul,
+    #[error("control characters are not allowed")]
+    ControlCharacter,
+    #[error("alternate data stream syntax is not allowed")]
+    AlternateDataStream,
+    #[error("a Windows-forbidden character is not allowed")]
+    ForbiddenCharacter,
+    #[error("a Windows reserved name is not allowed")]
+    ReservedName,
+    #[error("a component may not end in a space or period")]
+    TrailingSpaceOrPeriod,
 }
 
 impl DomainError {
@@ -436,6 +701,32 @@ impl DomainError {
             }
             Self::PlanNotApplicable => "plan_not_applicable".into(),
             Self::SamePath => "source_equals_target".into(),
+            Self::TargetRootNotAbsolute => "target_root_not_absolute".into(),
+            Self::AmbiguousPathPrefix => "ambiguous_path_prefix".into(),
+            Self::TargetOutsideRoot => "target_outside_root".into(),
+            Self::TargetEqualsRoot => "target_equals_root".into(),
+            Self::PathEncodingUnsupported => "path_encoding_unsupported".into(),
+            Self::InvalidPathComponent { reason } => {
+                format!("invalid_path_component:{}", reason.reason_code())
+            }
+        }
+    }
+}
+
+impl PathComponentViolation {
+    pub const fn reason_code(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::AbsoluteOrPrefixed => "absolute_or_prefixed",
+            Self::CurrentDirectory => "current_directory",
+            Self::ParentDirectory => "parent_directory",
+            Self::Separator => "separator",
+            Self::Nul => "nul",
+            Self::ControlCharacter => "control_character",
+            Self::AlternateDataStream => "alternate_data_stream",
+            Self::ForbiddenCharacter => "forbidden_character",
+            Self::ReservedName => "reserved_name",
+            Self::TrailingSpaceOrPeriod => "trailing_space_or_period",
         }
     }
 }
@@ -450,7 +741,7 @@ pub fn sanitize_component(value: &str) -> String {
     let mut value: String = value
         .chars()
         .map(|c| {
-            if INVALID_WINDOWS_CHARS.contains(&c) {
+            if INVALID_WINDOWS_CHARS.contains(&c) || c == '\0' || c.is_control() {
                 '_'
             } else {
                 c
@@ -473,18 +764,7 @@ pub fn sanitize_component(value: &str) -> String {
 }
 
 pub fn assess_windows_path(path: &Path) -> Result<(), DomainError> {
-    const PATH_LIMIT: usize = 240;
-    if path.as_os_str().is_empty() {
-        return Err(DomainError::EmptyPath);
-    }
-    let path_length = path.to_string_lossy().chars().count();
-    if path_length > PATH_LIMIT {
-        return Err(DomainError::PathTooLong {
-            actual: path_length,
-            limit: PATH_LIMIT,
-        });
-    }
-    Ok(())
+    crate::path_policy::assess_windows_path_with_options(path, false)
 }
 
 #[cfg(test)]
@@ -565,6 +845,48 @@ mod tests {
         let rules: NamingRules = serde_json::from_str(json).expect("old naming rules");
         assert_eq!(rules.duplicate_strategy, DuplicateStrategy::Legacy);
         assert!(!rules.allow_missing_metadata);
+        assert!(!rules.allow_long_paths);
+    }
+
+    #[test]
+    fn risk_severity_does_not_make_metadata_warning_blocking() {
+        assert_eq!(
+            Risk::MetadataMissing.issue_severity(),
+            Some(IssueSeverity::Warning)
+        );
+        assert!(!Risk::MetadataMissing.is_blocking());
+        assert_eq!(
+            Risk::MetadataMissing.execution_disposition(PlanAction::Move),
+            ExecutionDisposition::Executable
+        );
+        assert_eq!(
+            Risk::Conflict.execution_disposition(PlanAction::Move),
+            ExecutionDisposition::Blocked
+        );
+        assert_eq!(
+            Risk::None.execution_disposition(PlanAction::Skip),
+            ExecutionDisposition::Skip
+        );
+        assert_eq!(
+            ExecutionDisposition::default(),
+            ExecutionDisposition::Blocked
+        );
+    }
+
+    #[test]
+    fn naming_rules_schema_rejects_legacy_and_unknown_versions() {
+        assert!(require_current_naming_rules_schema(NAMING_RULES_SCHEMA_VERSION).is_ok());
+        assert_eq!(
+            require_current_naming_rules_schema(0),
+            Err(NamingRulesSchemaError::Legacy)
+        );
+        assert_eq!(
+            require_current_naming_rules_schema(NAMING_RULES_SCHEMA_VERSION + 1),
+            Err(NamingRulesSchemaError::Unsupported {
+                found: NAMING_RULES_SCHEMA_VERSION + 1,
+                supported: NAMING_RULES_SCHEMA_VERSION,
+            })
+        );
     }
 }
 
