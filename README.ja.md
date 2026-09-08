@@ -45,46 +45,4 @@ docker compose run --rm dev cargo run -p music-folder-cli -- rollback --executio
 
 ## Desktop
 
-Desktopは同じscan／Plan／Apply／Verify／Rollbackを画面から操作するWindowsアプリです。LinuxのDocker環境ではDesktopを含むコードを検証できますが、Windows配布物の作成と実機確認はWindows環境で行います。
-
-Windows向けbundleはGitHub ActionsのWindows runnerでartifactとして生成します。ローカルのコンパイル確認は `make desktop`、UIだけの開発確認は `npm --prefix ui run dev` を利用できます。後者をホストで実行する場合はNode.jsが必要です。
-
-## Dockerでのビルド
-
-ホストへのRust／Node.js導入は不要です。Docker Desktopを起動し、プロジェクトルートで実行します。
-
-```powershell
-docker compose build dev
-docker compose run --rm dev bash -c "npm --prefix ui ci && npm --prefix ui run build && cargo build --workspace"
-```
-
-## 検証
-
-```powershell
-make validate
-```
-
-`make validate` はDockerの `dev` コンテナ内でformat、Clippy、workspace test、UI behavior／accessibility test、UI typecheck、UI production build、依存監査を実行します。
-
-ホストに `make` がない場合は次の等価コマンドを使います。
-
-```powershell
-docker compose run --rm dev bash -c "npm --prefix ui ci && npm --prefix ui audit --audit-level=moderate && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui test && npm --prefix ui run check && npm --prefix ui run build"
-```
-
-Windows固有のpath／filesystem試験とTauri bundleはGitHub ActionsのWindows runnerで検証します。ローカルで検証できなかったことと、プロジェクト全体が未検証であることは区別してください。
-
-## 実装状況と正本
-
-リポジトリ内の実装タスクと自動release gateは完了しています。一般配布までに残るのは、対象artifactを使った次の外部受入です。
-
-1. Windows実機でWebView2、Unicode／長いpath、reparse、crash recovery、upgrade／uninstallを確認する（EA01）。
-2. 組織のcode-signing証明書／HSMを使い、本番署名、timestamp、trust chain、配布経路、SmartScreen表示を確認する（EA02）。
-
-状態を重複管理しないため、詳細なタスク状態は [`storage/tasks/implementation-plan.ja.md`](storage/tasks/implementation-plan.ja.md) を正とします。要件・設計・代表試験の対応は [`storage/design/traceability.ja.md`](storage/design/traceability.ja.md)、利用者向けの状態要約は [`IMPLEMENTATION_STATUS.ja.md`](IMPLEMENTATION_STATUS.ja.md) を参照してください。
-
-性能測定例:
-
-```powershell
-docker compose run --rm dev cargo run -p music-folder-cli -- benchmark --source crates/infra/tests/fixtures --db benchmark.db
-```
+Desktopは同じscan／Plan／Apply／Verify／Rollbackを画面から操作するWindowsアプリです。実際のファイル変更は、画面上の計画を確認してから実行してください。
