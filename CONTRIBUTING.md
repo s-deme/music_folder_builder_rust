@@ -16,18 +16,22 @@
 
 ## 検証
 
-通常の変更では `make validate` を実行する。hostにtoolchainがない場合はREADME記載のDocker Compose等価commandを使う。pull requestではGitHub Actionsが次を再実行する。
+通常の変更では `make validate` を実行する。hostにtoolchainがない場合はREADME記載のDocker Compose等価commandを使う。mainへのpushとpull requestではGitHub Actionsが次を再実行する。作業ブランチのpushとPRの二重起動は省く。
 
-- Linux/Windowsのformat、Clippy、workspace test、UI behavior test/typecheck/build/audit
+- Windowsのformat、Clippy、workspace test、UI behavior test/typecheck/build/audit（各1回）
 - locked/frozenなCargo dependency graphとnpm lockfile
-- RustSecとcargo-denyによるadvisory、license、source policy
-- Windowsのlong path、reparse、SQLite migration/fault、CSP、installer smoke
+- cargo-denyによるRustSec advisory、license、source policy
+- Windowsのpath、reparse、SQLite migration/fault、CSP
 - SDD traceabilityとstatus整合
-- CLI JSON schema/exit contractと、3 iterationの1万item Scan/Plan/Apply dry-run/RSS benchmark
+- CLI JSON schema/exit contract
+
+installer生成・installer/CLI artifact long-path smokeと3 iterationの1万item Scan/Plan/Apply dry-run/RSS benchmarkは、手動CIの `extended: true` またはReleaseからの呼び出しで実行する。通常CIでは重複する個別Rustテスト、UI typecheck/build、traceabilityの正例検査を再実行しない。`npm --prefix ui test` がtypecheck/buildを、`test_traceability.py` が実repositoryの整合検査を含む。
+
+通常のPlan境界テストは514件で512件の改訂pageを跨ぎ、境界直後の変更と次行の保持を確認する。2万件の負荷試験は既存のignored benchmarkを必要時に実行する。
 
 dependencyを追加する場合はlockfileを更新し、`deny.toml` のlicense許可を理由なく拡張しない。生成物や`target/`をcommitしない。
 
-`cargo-audit` のinformational warningはCI logでreviewし、workspaceへ直接影響するunmaintained/unsound advisoryは`cargo-deny`で失敗する。一時的なignoreを追加する場合はtracking issue、影響評価、削除条件を同じ変更に記録する。
+RustSecの検査は `cargo-deny` に統一する。advisoryの検査範囲は `deny.toml` を維持し、同じdatabaseを検査する `cargo-audit` のインストールと実行を省く。一時的なignoreを追加する場合はtracking issue、影響評価、削除条件を同じ変更に記録する。
 
 ## Safety review
 

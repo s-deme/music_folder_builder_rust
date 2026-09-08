@@ -36,12 +36,14 @@ jobs:
   ci-gate:
     name: Required CI gates
     uses: ./.github/workflows/ci.yml
+    with:
+      extended: true
     permissions:
       contents: read
 
   release-readiness:
     name: No incomplete implementation tasks
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 10
     outputs:
       release-version: ${{ steps.release-version.outputs.version }}
@@ -547,12 +549,15 @@ jobs:
           retention-days: 30
 
   publish-tag:
+    defaults:
+      run:
+        shell: bash
     name: Publish immutable tagged release
     # Public GitHub Releases are produced only by the protected, signed tag-push
     # path. A workflow_dispatch run may validate an existing tag, but it must
     # never turn the internal-unsigned channel into a public release.
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && needs.finalize.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 10
     needs: finalize
     permissions:

@@ -13,7 +13,7 @@
 - bounded scan／Plan処理、metadata cache、取消、進捗・性能計測
 - CLIのversioned JSON／JSON Lines契約と安定exit code
 - Desktopのmanaged state、capability allowlist、CSP、accessibility／behavior test
-- Linux／Windows CI、dependency policy、traceability、SBOM、checksum、provenance、release metadata
+- Windows CI、dependency policy、traceability、SBOM、checksum、provenance、release metadata（bundleと大規模benchmarkは手動／Release時）
 
 ## 外部受入
 

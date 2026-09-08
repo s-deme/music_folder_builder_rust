@@ -16,16 +16,16 @@
 - Rust dependency: `Cargo.lock` と `--locked` / `--frozen`
 - UI dependency: `ui/package-lock.json` と `npm ci`
 - Tauri CLI: workflowの `TAURI_CLI_VERSION`
-- `cargo-audit`、`cargo-deny`、`cargo-cyclonedx`: workflowのexact version
+- `cargo-deny`、`cargo-cyclonedx`: workflowのexact version
 - GitHub公式Action: Node 24対応versionのfull commit SHAへ固定し、注釈versionをDependabot PRでreview
 
 Cargo cacheはregistry index/cacheとgit databaseだけを対象とする。`target/`、実行binary、監査toolはcacheから復元しない。
 
-`cargo-audit` はlockfile全体の既知脆弱性をfailし、transitiveなinformational advisoryを表示する。`cargo-deny` はこれに加え、workspaceへ直接関係するunmaintained/unsound advisory、license、source policyをfailする。informational warningを黙ってignoreせず、dependency更新時に解消可否をreviewする。
+`cargo-deny` がRustSecの既知脆弱性と `deny.toml` のadvisory、license、source policyを検査する。重複する `cargo-audit` のインストール・実行は省く。informational warningを黙ってignoreせず、dependency更新時に解消可否をreviewする。
 
 ## 自動release手順
 
-1. CI reusable workflowがLinux/Windows validation、dependency policy、traceability、Windows bundle inspectionとinstaller smokeを同じ `${GITHUB_SHA}` で通す。
+1. CI reusable workflowを `extended: true` で呼び、Windows validation、dependency policy、traceability、1万件benchmark、Windows bundle inspectionとinstaller smokeを同じ `${GITHUB_SHA}` で通す。通常のpush／PRではbundleと大規模benchmarkを省略するが、Releaseでは必須とする。Releaseの全jobもWindows runnerで実行する。
 2. release readinessがstatus整合を常に確認し、production channelだけtask planの全checkbox完了を要求する。internal unsignedは未完taskを隠さずartifact検証を先行できる。
 3. CIが生成したMSI/NSISをunsigned policyで検証する。
 4. `cargo-cyclonedx 0.5.9` とnpmからRust/UI SBOMを生成する。commit timestampを`SOURCE_DATE_EPOCH`に使う。

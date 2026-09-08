@@ -13,7 +13,7 @@ Desktop backendはapp-local DBとapplication service/job registryをprocess mana
 
 手動targetはbackendの検証commandでPlan/item/generationへ束縛した短命・一回限りのopaque capabilityへ変換し、実際のPlan改訂commandはraw targetを受け取らない。capability consume後もCoreがpersisted root/rulesに対してtargetを再検証する。
 
-CLIはDesktopと同じCore workflowを使い、TOML設定、Plan改訂、archive/cleanup、recovery、確認tokenを提供する。全commandはversioned JSON envelopeと安定exit codeを選択可能にする。releaseはtoolchain/dependencyを固定し、Linux/Windows gate、SBOM、checksum、provenance、署名input、installer smokeを自動化する。本番証明書とWindows実機受入は外部条件として分離する。
+CLIはDesktopと同じCore workflowを使い、TOML設定、Plan改訂、archive/cleanup、recovery、確認tokenを提供する。全commandはversioned JSON envelopeと安定exit codeを選択可能にする。releaseはtoolchain/dependencyを固定し、Windows gate、SBOM、checksum、provenance、署名input、installer smokeを自動化する。個人用Windows専用のためUbuntu CIは設けず、installerと大規模benchmarkは手動／Release時に実行する。本番証明書とWindows実機受入は外部条件として分離する。
 
 ## 結果
 

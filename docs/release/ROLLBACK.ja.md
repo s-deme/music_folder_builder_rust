@@ -11,6 +11,7 @@
 
 - 問題releaseをdraftへ戻すか削除し、release noteへ利用停止を明記する。tagやassetを同じversionの別binaryで上書きしない。
 - 修正版は新しいversion、tag、同一commit gate、署名、SBOM、checksum、provenanceをすべて再生成する。
+- 復旧版もRelease経由の `extended: true` CIでWindows installerと性能検証を通す。通常push／PRのCI成功だけを配布判定に使わない。
 - 単純なdowngradeはversion monotonicityと新schema互換性を破るため配布しない。直前の実装へ戻す必要がある場合も、修正を新しいversionとしてbuildし、そのchecksum、attestation、Authenticode署名、migration互換性を再検証する。
 - download mirrorや社内配布cacheがある場合はdigest単位で停止し、置換ではなく新versionを配布する。
 - 復旧版も `install_verified_release.ps1` のregistry-based単調増加versionとexact publisher policyを通す。旧版を直接起動してlauncherを迂回しない。

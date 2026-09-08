@@ -106,7 +106,9 @@ fn plan_evidence(database: &Path, plan_id: &str) -> (String, i64, Vec<String>) {
 
 #[test]
 fn high_cardinality_plan_is_page_boundary_deterministic_and_batch_bounded() {
-    const ITEM_COUNT: usize = 1_200;
+    // ponytail: cross the 512-item revision page with an override and a following row;
+    // larger workloads belong in bounded_plan_twenty_thousand_item_benchmark.
+    const ITEM_COUNT: usize = 514;
     let temporary = tempdir().unwrap();
     let database = temporary.path().join("bounded-plan.db");
     let store = Arc::new(SqliteScanStore::open(&database).unwrap());
@@ -125,12 +127,12 @@ fn high_cardinality_plan_is_page_boundary_deterministic_and_batch_bounded() {
     assert!(wide_peak <= 113, "observed peak page was {wide_peak}");
     assert!(tiny_targets[0].ends_with("Same Title.flac"));
     assert!(tiny_targets[1].ends_with("Same Title_2.flac"));
-    assert!(tiny_targets[ITEM_COUNT - 1].ends_with("Same Title_1200.flac"));
+    assert!(tiny_targets[ITEM_COUNT - 1].ends_with("Same Title_514.flac"));
 
     let revised_item_id: String = Connection::open(&database)
         .unwrap()
         .query_row(
-            "SELECT id FROM plan_items WHERE plan_id=?1 AND ordinal=600",
+            "SELECT id FROM plan_items WHERE plan_id=?1 AND ordinal=513",
             params![wide_plan],
             |row| row.get(0),
         )
@@ -149,6 +151,8 @@ fn high_cardinality_plan_is_page_boundary_deterministic_and_batch_bounded() {
     .unwrap();
     let (child_hash, child_peak, child_targets) = plan_evidence(&database, &child_plan);
     assert_eq!(child_targets.len(), ITEM_COUNT);
+    assert!(child_targets[512].ends_with("manual.flac"));
+    assert_eq!(child_targets[513], wide_targets[513]);
     assert_ne!(child_hash, wide_hash);
     assert!(child_peak <= 512, "observed revision peak was {child_peak}");
     let connection = Connection::open(&database).unwrap();

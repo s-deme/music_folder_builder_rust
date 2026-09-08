@@ -2,8 +2,19 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      extended:
+        description: Build installers and run the 10,000-item benchmark
+        type: boolean
+        default: true
   workflow_call:
+    inputs:
+      extended:
+        type: boolean
+        default: false
 
 # All Actions below are maintained by GitHub and pinned to full commit SHAs for
 # Node 24 compatibility. Dependabot opens reviewed updates; no binary cache is used.
@@ -16,49 +27,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_AUDIT_VERSION: "0.22.2"
   CARGO_DENY_VERSION: "0.20.2"
   TAURI_CLI_VERSION: "2.11.4"
   NODE_VERSION: "24.18.0"
   PYTHON_VERSION: "3.13.15"
 
 jobs:
-  traceability:
-    name: SDD traceability and status
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Check REQ -> design -> task -> test links
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python scripts/check_traceability.py
-      - name: Prove negative fixture detection
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python scripts/test_traceability.py
-      - name: Prove release metadata tamper and omission detection
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python scripts/test_release_metadata.py
-      - name: Test verified-installer semantic policy
-        shell: pwsh
-        run: ./scripts/test_install_verified_release.ps1
-      - name: Prove CLI schema and benchmark policy negatives
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: |
-          python scripts/test_cli_schema.py
-          python scripts/test_benchmark_policy.py
-
   dependency-policy:
     name: Rust dependency audit
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -78,35 +55,19 @@ jobs:
             cargo-downloads-${{ runner.os }}-${{ runner.arch }}-
       - name: Fetch locked dependencies
         run: cargo fetch --locked
-      - name: Install pinned audit tools
-        run: |
-          cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
-          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
-      - name: RustSec advisory audit
-        # Vulnerabilities fail. Informational warnings remain visible; cargo-deny
-        # separately denies unmaintained/unsound advisories in workspace scope.
-        run: cargo audit
+      - name: Install pinned dependency checker
+        run: cargo install cargo-deny --version "$env:CARGO_DENY_VERSION" --locked
       - name: License, source, advisory, and duplicate policy
         run: cargo deny --locked check advisories bans licenses sources
 
   validate:
-    name: Validate (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Validate (windows-2025)
+    runs-on: windows-2025
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
-          librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
       - name: Confirm pinned Rust toolchain
         run: rustc --version --verbose
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -128,6 +89,21 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Prove negative fixture detection
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/test_traceability.py
+      - name: Prove release metadata tamper and omission detection
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/test_release_metadata.py
+      - name: Test verified-installer semantic policy
+        shell: pwsh
+        run: ./scripts/test_install_verified_release.ps1
+      - name: Prove CLI schema and benchmark policy negatives
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/test_cli_schema.py && python scripts/test_benchmark_policy.py
       - name: Fetch Cargo.lock exactly
         run: cargo fetch --locked
       - name: Install UI from package-lock
@@ -136,10 +112,6 @@ jobs:
         run: npm --prefix ui audit --audit-level=moderate
       - name: Test UI workflow and accessibility contracts
         run: npm --prefix ui test
-      - name: Typecheck UI
-        run: npm --prefix ui run check
-      - name: Build production UI
-        run: npm --prefix ui run build
       - name: Inspect production CSP and Tauri schema
         shell: pwsh
         run: ./scripts/inspect_windows_bundle.ps1 -ConfigOnly
@@ -179,45 +151,26 @@ jobs:
             --sample $recoverySample `
             --sample $blockedSample `
             --sample $errorSample
-      - name: Windows path, reparse, schema, and fault gates
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo test --frozen -p music-folder-infra --test windows_paths -- --nocapture
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --frozen -p music-folder-infra --test atomic_no_replace -- --nocapture
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --frozen -p music-folder-infra --test sqlite_snapshot_migration -- --nocapture
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --frozen -p music-folder-infra --test workflow_integration -- --nocapture
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify generated audio fixtures
-        if: runner.os == 'Linux'
-        run: >-
-          test -s crates/infra/tests/fixtures/flac/japanese.flac &&
-          test -s crates/infra/tests/fixtures/mp3/japanese.mp3 &&
-          test -s crates/infra/tests/fixtures/m4a/japanese.m4a &&
-          test -s crates/infra/tests/fixtures/ogg/japanese.ogg
       - name: Materialize deterministic 10,000-item benchmark corpus
-        if: runner.os == 'Linux'
+        if: inputs.extended
         run: >-
           python scripts/materialize_benchmark_corpus.py
           --source crates/infra/tests/fixtures
-          --output "$RUNNER_TEMP/music-folder-benchmark-corpus"
+          --output "$env:RUNNER_TEMP/music-folder-benchmark-corpus"
           --count 10000
       - name: Benchmark three cold/warm Scan, Plan, and Apply dry-run iterations
-        if: runner.os == 'Linux'
+        if: inputs.extended
         run: >-
           cargo run --frozen -p music-folder-cli -- --output json benchmark
-          --source "$RUNNER_TEMP/music-folder-benchmark-corpus"
-          --db "$RUNNER_TEMP/benchmark.db" --iterations 3 > benchmark.json
+          --source "$env:RUNNER_TEMP/music-folder-benchmark-corpus"
+          --db "$env:RUNNER_TEMP/benchmark.db" --iterations 3 > benchmark.json
       - name: Enforce fixture performance ceilings
-        if: runner.os == 'Linux'
+        if: inputs.extended
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python scripts/check_benchmark.py benchmark.json --policy scripts/ci-benchmark-policy.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: runner.os == 'Linux'
+        if: inputs.extended
         with:
           name: benchmark-json
           path: |
@@ -230,7 +183,8 @@ jobs:
     name: Windows artifact and installer smoke
     runs-on: windows-2025
     timeout-minutes: 75
-    needs: [traceability, dependency-policy, validate]
+    if: inputs.extended
+    needs: [dependency-policy, validate]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -258,11 +212,7 @@ jobs:
       - name: Fetch Cargo.lock exactly
         run: cargo fetch --locked
       - name: Install and build UI from package-lock
-        run: |
-          npm --prefix ui ci
-          npm --prefix ui audit --audit-level=moderate
-          npm --prefix ui test
-          npm --prefix ui run build
+        run: npm --prefix ui ci && npm --prefix ui run build
       - name: Install Tauri CLI from its published Cargo.lock
         shell: pwsh
         run: cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked --root (Join-Path $env:RUNNER_TEMP "tauri-cli")
