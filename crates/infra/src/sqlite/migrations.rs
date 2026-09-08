@@ -451,6 +451,10 @@ fn migrate_v5(transaction: &Transaction<'_>) -> Result<(), String> {
 
 fn migrate_v6(transaction: &Transaction<'_>) -> Result<(), String> {
     for (table, column, definition) in [
+        // Early v2 databases can record the migration before these lossless
+        // root columns exist, so v6 also repairs that partial legacy state.
+        ("scan_runs", "source_root_encoding", "TEXT"),
+        ("scan_runs", "source_root_blob", "BLOB"),
         ("scan_items", "path_encoding", "TEXT"),
         ("scan_items", "path_blob", "BLOB"),
         ("scan_items", "content_sha256", "TEXT"),

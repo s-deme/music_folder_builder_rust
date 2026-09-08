@@ -613,6 +613,39 @@ fn v14_conflict_candidate_display_paths_are_backfilled_with_a_legacy_codec() {
 }
 
 #[test]
+fn v6_repairs_missing_scan_root_codecs_from_partial_legacy_schema() {
+    let temp = tempdir().unwrap();
+    let database = temp.path().join("v6-partial-schema.db");
+    let source_root = temp.path().join("source");
+    let store = SqliteScanStore::open(&database).unwrap();
+    let scan_id = store.begin_scan(&source_root).unwrap();
+    drop(store);
+
+    let legacy = Connection::open(&database).unwrap();
+    legacy
+        .execute_batch(
+            "ALTER TABLE scan_runs DROP COLUMN source_root_encoding;
+             ALTER TABLE scan_runs DROP COLUMN source_root_blob;
+             DELETE FROM schema_migrations WHERE version=6;
+             PRAGMA user_version=16;",
+        )
+        .unwrap();
+    drop(legacy);
+
+    drop(SqliteScanStore::open(&database).unwrap());
+    let upgraded = Connection::open(&database).unwrap();
+    let (encoding, raw): (String, Vec<u8>) = upgraded
+        .query_row(
+            "SELECT source_root_encoding,source_root_blob FROM scan_runs WHERE id=?1",
+            params![scan_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(encoding, "utf8_legacy_v1");
+    assert_eq!(raw, source_root.to_string_lossy().as_bytes());
+}
+
+#[test]
 fn legacy_database_is_transactionally_upgraded_and_backfilled() {
     let temp = tempdir().unwrap();
     let database = temp.path().join("legacy.db");
