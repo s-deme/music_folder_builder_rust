@@ -66,7 +66,7 @@ jobs:
           persist-credentials: false
       - name: Confirm pinned Rust toolchain
         run: rustc --version --verbose
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Cache immutable downloads/index data only. Never restore target/ or executables.
           path: |
@@ -109,7 +109,7 @@ jobs:
           librsvg2-dev libxdo-dev libdbus-1-dev pkg-config
       - name: Confirm pinned Rust toolchain
         run: rustc --version --verbose
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Registry/git downloads are safe to share by lockfile; build outputs are rebuilt.
           path: |
@@ -237,7 +237,7 @@ jobs:
           persist-credentials: false
       - name: Confirm pinned Rust toolchain
         run: rustc --version --verbose
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
