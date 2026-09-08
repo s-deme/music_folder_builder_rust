@@ -177,13 +177,13 @@ jobs:
           python -c "import json,pathlib; json.loads(pathlib.Path('sbom/rust.cdx.json').read_text(encoding='utf-8-sig'))"
           python -c "import json,pathlib; json.loads(pathlib.Path('sbom/ui.cdx.json').read_text(encoding='utf-8-sig'))"
           git diff --exit-code -- Cargo.lock ui/package-lock.json
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-windows-unsigned
           path: unsigned-verified/**
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-sbom
           path: sbom/**
@@ -228,7 +228,7 @@ jobs:
           }
           ./scripts/sign_windows_artifacts.ps1 -InputDirectory target/release/bundle -OutputDirectory test-repacked -Mode Test -ArtifactSet Installers
           ./scripts/test_windows_installer.ps1 -BundleDirectory test-repacked -SignaturePolicy Present -ExpectedSignerSubject "CN=Music Folder Builder CI Test Only"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-windows-test-signed-not-for-distribution
           path: test-repacked/**
@@ -400,7 +400,7 @@ jobs:
               -ExpectedPublisher $env:EXPECTED_PUBLISHER `
               -VerifyOnly
           }
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-windows-production-signed
           path: production-signed/**
@@ -539,7 +539,7 @@ jobs:
           $checksumPath = (Resolve-Path "release/SHA256SUMS").Path
           [IO.File]::AppendAllText($checksumPath, (($checksumLines -join "`n") + "`n"), [Text.Encoding]::ASCII)
           python scripts/verify_release_metadata.py --release-dir release --commit $env:GITHUB_SHA --channel $env:RELEASE_CHANNEL --repository-root .
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: music-folder-release-${{ github.sha }}
           path: release/**
