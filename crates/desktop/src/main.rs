@@ -2286,7 +2286,9 @@ mod tests {
             for path in [&directory, &database] {
                 let sddl = private_state_acl_sddl(path).unwrap();
                 assert!(sddl.starts_with("D:P"), "DACL must be protected: {sddl}");
-                assert!(sddl.contains(&user_sid), "current user missing: {sddl}");
+                let contains_current_user = sddl.contains(&user_sid)
+                    || (user_sid.ends_with("-500") && sddl.contains(";;;LA)"));
+                assert!(contains_current_user, "current user missing: {sddl}");
                 assert!(sddl.contains(";;;SY)"), "SYSTEM missing: {sddl}");
                 assert!(sddl.contains(";;;BA)"), "Administrators missing: {sddl}");
                 assert!(!sddl.contains(";;;WD)"), "Everyone must be absent: {sddl}");

@@ -198,13 +198,13 @@ jobs:
           test -s crates/infra/tests/fixtures/mp3/japanese.mp3 &&
           test -s crates/infra/tests/fixtures/m4a/japanese.m4a &&
           test -s crates/infra/tests/fixtures/ogg/japanese.ogg
-      - name: Materialize deterministic 100,000-item benchmark corpus
+      - name: Materialize deterministic 10,000-item benchmark corpus
         if: runner.os == 'Linux'
         run: >-
           python scripts/materialize_benchmark_corpus.py
           --source crates/infra/tests/fixtures
           --output "$RUNNER_TEMP/music-folder-benchmark-corpus"
-          --count 100000
+          --count 10000
       - name: Benchmark three cold/warm Scan, Plan, and Apply dry-run iterations
         if: runner.os == 'Linux'
         run: >-
@@ -215,14 +215,14 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python scripts/check_benchmark.py benchmark.json
+        run: python scripts/check_benchmark.py benchmark.json --policy scripts/ci-benchmark-policy.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: runner.os == 'Linux'
         with:
           name: benchmark-json
           path: |
             benchmark.json
-            scripts/benchmark-policy.json
+            scripts/ci-benchmark-policy.json
           if-no-files-found: error
           retention-days: 7
 

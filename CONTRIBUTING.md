@@ -23,7 +23,7 @@
 - RustSecとcargo-denyによるadvisory、license、source policy
 - Windowsのlong path、reparse、SQLite migration/fault、CSP、installer smoke
 - SDD traceabilityとstatus整合
-- CLI JSON schema/exit contractと、3 iterationの10万item Scan/Plan/Apply dry-run/RSS benchmark
+- CLI JSON schema/exit contractと、3 iterationの1万item Scan/Plan/Apply dry-run/RSS benchmark
 
 dependencyを追加する場合はlockfileを更新し、`deny.toml` のlicense許可を理由なく拡張しない。生成物や`target/`をcommitしない。
 

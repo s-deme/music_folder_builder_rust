@@ -986,8 +986,7 @@ fn benchmark(
     workers: Option<usize>,
     iterations: u32,
 ) -> Result<CommandResult, CliFailure> {
-    let mut options = scan_options(workers);
-    attach_scan_progress(&mut options);
+    let options = scan_options(workers);
     let workspace = BenchmarkWorkspace::new(&db)
         .map_err(|error| CliFailure::internal("benchmark_workspace_failed", error))?;
     let target_root =
