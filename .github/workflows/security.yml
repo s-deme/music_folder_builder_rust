@@ -1,0 +1,50 @@
+name: Security
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Security gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history for secrets
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --retry 3 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --log-opts=--all
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # actions/setup-node@v5
+        with:
+          node-version: '24.18.0'
+      - name: Audit npm dependencies (ui)
+        working-directory: ui
+        run: npm audit --package-lock-only --ignore-scripts --audit-level=low
+      - name: Install cargo-audit
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --retry 3 https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz --output "$RUNNER_TEMP/cargo-audit.tgz"
+          echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  $RUNNER_TEMP/cargo-audit.tgz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/cargo-audit"
+          tar -xzf "$RUNNER_TEMP/cargo-audit.tgz" -C "$RUNNER_TEMP/cargo-audit"
+          find "$RUNNER_TEMP/cargo-audit" -type f -name cargo-audit -exec chmod +x {} \;
+          find "$RUNNER_TEMP/cargo-audit" -type f -name cargo-audit -exec dirname {} \; >> "$GITHUB_PATH"
+      - name: Audit Rust dependencies (Cargo.lock)
+        run: cargo-audit audit --file Cargo.lock
