@@ -51,6 +51,8 @@ fn completed_plan(
                     track_no: Some(1),
                     disc_no: Some(1),
                     year: Some(2026),
+                    genre: None,
+                    has_artwork: None,
                 }),
                 kind: FileKind::Music,
             }],
@@ -549,7 +551,7 @@ fn v10_journal_rows_backfill_auditable_current_state_and_attempt_owner() {
     let user_version: i64 = raw
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(user_version, 16);
+    assert_eq!(user_version, 17);
 }
 
 #[test]
@@ -565,7 +567,7 @@ fn database_with_unknown_newer_user_version_is_rejected_without_mutation() {
         Ok(_) => panic!("a newer database must be rejected"),
         Err(error) => error,
     };
-    assert_eq!(error, "database_schema_too_new:99>16");
+    assert_eq!(error, "database_schema_too_new:99>17");
     let raw = Connection::open(&database).unwrap();
     let user_version: i64 = raw
         .query_row("PRAGMA user_version", [], |row| row.get(0))

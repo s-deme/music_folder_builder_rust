@@ -1938,8 +1938,18 @@ impl<F: FileSystem + 'static, M: MetadataReader + 'static, S: ScanStore + 'stati
     ScanUseCase<F, M, S>
 {
     pub fn execute(&self, root: &Path, options: &ScanOptions) -> WorkflowResult<ScanResult> {
-        let started = Instant::now();
         let scan_id = self.store.begin_scan(root)?;
+        self.execute_started(root, options, scan_id)
+    }
+
+    /// Continues a scan already persisted by a composing use case.
+    pub fn execute_started(
+        &self,
+        root: &Path,
+        options: &ScanOptions,
+        scan_id: String,
+    ) -> WorkflowResult<ScanResult> {
+        let started = Instant::now();
         let worker_count = options.workers.max(1);
         let queue_capacity = options.queue_capacity.max(worker_count);
         let (path_sender, path_receiver) = bounded(queue_capacity);
@@ -2126,7 +2136,10 @@ fn spawn_scan_worker<
             let fingerprint = match fs.fingerprint(&path) {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = output.send(ScanWorkerResult::Warning(error));
+                    let _ = output.send(ScanWorkerResult::Warning(format!(
+                        "fingerprint_failed:{}:{error}",
+                        path.display()
+                    )));
                     continue;
                 }
             };
@@ -2162,6 +2175,28 @@ fn spawn_scan_worker<
                     }
                 }
             };
+            // Do not store tags under a fingerprint from before a concurrent edit.
+            if !is_image && !cache_hit && metadata.is_some() {
+                let validation = fs.fingerprint(&path).and_then(|after| {
+                    if after.size_bytes == fingerprint.size_bytes
+                        && after.mtime_ns == fingerprint.mtime_ns
+                        && after.version == fingerprint.version
+                        && after.file_identity == fingerprint.file_identity
+                        && after.content_sha256 == fingerprint.content_sha256
+                    {
+                        Ok(())
+                    } else {
+                        Err("fingerprint_changed".into())
+                    }
+                });
+                if let Err(error) = validation {
+                    let _ = output.send(ScanWorkerResult::Warning(format!(
+                        "source_changed_during_metadata:{}:{error}",
+                        path.display()
+                    )));
+                    continue;
+                }
+            }
             let warning = !is_image && metadata.is_none() && !read_error_reported;
             let _ = output.send(ScanWorkerResult::Record {
                 file: ScannedFile {
@@ -2635,6 +2670,8 @@ fn resolve_staged_duplicate_targets<S: PlanBuildStore + ?Sized>(
                 track_no: None,
                 disc_no: None,
                 year: None,
+                genre: None,
+                has_artwork: None,
             };
             let metadata = staged
                 .item
@@ -2997,6 +3034,8 @@ fn make_plan_item(
         track_no: None,
         disc_no: None,
         year: None,
+        genre: None,
+        has_artwork: None,
     });
     let artist_missing = metadata
         .album_artist
@@ -3194,6 +3233,8 @@ fn resolve_duplicate_targets(items: &mut [PlanItem], naming: &NamingRules, targe
                 track_no: None,
                 disc_no: None,
                 year: None,
+                genre: None,
+                has_artwork: None,
             };
             let metadata = item.file.metadata.as_ref().unwrap_or(&metadata_fallback);
             let mut candidate_number = (*count).max(2);
@@ -3285,6 +3326,8 @@ mod snapshot_tests {
                 track_no: None,
                 disc_no: None,
                 year: None,
+                genre: None,
+                has_artwork: None,
             }),
             kind: FileKind::Music,
         };
@@ -3397,6 +3440,8 @@ mod snapshot_tests {
                 track_no: Some(1),
                 disc_no: Some(1),
                 year: None,
+                genre: None,
+                has_artwork: None,
             }),
             kind: FileKind::Music,
         };
@@ -3534,6 +3579,8 @@ mod snapshot_tests {
                 track_no: Some(1),
                 disc_no: Some(2),
                 year: None,
+                genre: None,
+                has_artwork: None,
             }),
             kind: FileKind::Music,
         };

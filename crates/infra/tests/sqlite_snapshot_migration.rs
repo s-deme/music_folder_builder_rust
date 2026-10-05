@@ -18,6 +18,8 @@ fn metadata(artist: &str) -> TrackMetadata {
         track_no: Some(1),
         disc_no: Some(1),
         year: Some(2026),
+        genre: None,
+        has_artwork: None,
     }
 }
 
@@ -723,7 +725,7 @@ fn legacy_database_is_transactionally_upgraded_and_backfilled() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(versions, 16);
+    assert_eq!(versions, 17);
     let journal_columns: Vec<String> = upgraded
         .prepare("PRAGMA table_info(operation_journal)")
         .unwrap()

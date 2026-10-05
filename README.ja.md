@@ -43,6 +43,24 @@ docker compose run --rm dev cargo run -p music-folder-cli -- rollback --executio
 
 本rollbackも `--execute --confirm <EXECUTION_RUN_ID>` を明示した場合だけ実行されます。機械処理ではグローバルオプション `--output json` と、必要に応じて `--events jsonl` を利用できます。
 
+## 音楽ライブラリ診断
+
+整理先や移動Planを作らずに診断できます。音楽ファイルは変更せず、DBに結果とキャッシュを保存します。
+保守用の `diagnostics` とは別の入口です。
+
+```powershell
+music-folder doctor scan --source <SOURCE> --db <DB>
+music-folder doctor show --run-id <DOCTOR_RUN_ID> --db <DB>
+music-folder --output json doctor issues --run-id <DOCTOR_RUN_ID> --severity warning --db <DB>
+music-folder doctor duplicates --run-id <DOCTOR_RUN_ID> --db <DB>
+music-folder doctor albums --run-id <DOCTOR_RUN_ID> --db <DB>
+```
+
+タグ欠損、Artist／Albumの表記揺れ、完全重複、アルバム内の番号・属性不一致を候補として表示します。
+MP3／FLAC／M4A／OGGの既存fixtureとWAVの最小PCM入力を検証対象にしています。
+AAC／OPUSの正常音声・タグfixtureは未検証です。Desktopの「診断」タブでは、診断の開始・取消、保存履歴、Issueの絞り込み、アルバムとジャケットの閲覧ができます。
+規則・制約・終了コード・DB互換性は[診断の設計資料](docs/library-doctor-architecture.md)を参照してください。
+
 ## Desktop
 
 Desktopは同じscan／Plan／Apply／Verify／Rollbackを画面から操作するWindowsアプリです。実際のファイル変更は、画面上の計画を確認してから実行してください。

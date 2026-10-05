@@ -19,6 +19,8 @@ fn metadata(title: String) -> TrackMetadata {
         track_no: Some(1),
         disc_no: Some(1),
         year: Some(2026),
+        genre: None,
+        has_artwork: None,
     }
 }
 

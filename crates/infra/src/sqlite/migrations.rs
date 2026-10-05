@@ -2,7 +2,7 @@ use crate::path_codec::decode_path;
 use music_folder_core::{windows_path_key, WINDOWS_PATH_KEY_VERSION};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-const LATEST_SCHEMA_VERSION: i64 = 16;
+const LATEST_SCHEMA_VERSION: i64 = 17;
 
 fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
     connection
@@ -1953,6 +1953,14 @@ fn migrate_v16(transaction: &Transaction<'_>) -> Result<(), String> {
 fn validate_latest_schema(connection: &Connection) -> Result<(), String> {
     for (table, columns) in [
         (
+            "doctor_runs",
+            &["scan_id", "status", "rule_version", "summary_json"][..],
+        ),
+        (
+            "doctor_issues",
+            &["run_id", "ordinal", "code", "severity", "issue_json"][..],
+        ),
+        (
             "scan_runs",
             &["snapshot_hash", "snapshot_version", "source_root_blob"][..],
         ),
@@ -2208,6 +2216,7 @@ pub fn upgrade(connection: &mut Connection, applied_at: i64) -> Result<(), Strin
             14 => migrate_v14(&transaction)?,
             15 => migrate_v15(&transaction)?,
             16 => migrate_v16(&transaction)?,
+            17 => migrate_v17(&transaction)?,
             _ => unreachable!(),
         }
         transaction
@@ -2222,4 +2231,20 @@ pub fn upgrade(connection: &mut Connection, applied_at: i64) -> Result<(), Strin
     connection
         .pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)
         .map_err(|error| error.to_string())
+}
+
+fn migrate_v17(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction.execute_batch("CREATE TABLE IF NOT EXISTS doctor_runs(
+        id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK(status IN ('running','completed','partial','failed','cancelled')),
+        rule_version INTEGER NOT NULL, summary_json TEXT NOT NULL,
+        started_at INTEGER NOT NULL, finished_at INTEGER);
+        CREATE INDEX IF NOT EXISTS doctor_runs_scan ON doctor_runs(scan_id);
+        CREATE TABLE IF NOT EXISTS doctor_issues(
+        run_id TEXT NOT NULL REFERENCES doctor_runs(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL, code TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK(severity IN ('critical','warning','info')),
+        category TEXT NOT NULL, issue_json TEXT NOT NULL, PRIMARY KEY(run_id,ordinal));
+        CREATE INDEX IF NOT EXISTS doctor_issues_filter ON doctor_issues(run_id,severity,code);")
+        .map_err(|e| e.to_string())
 }

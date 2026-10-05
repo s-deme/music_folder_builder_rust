@@ -55,6 +55,92 @@ fn run(arguments: &[&str]) -> Output {
         .expect("run music-folder CLI")
 }
 
+#[test]
+fn doctor_cli_persists_filters_and_emits_one_json_document() {
+    let temp = TestDirectory::new("doctor");
+    let source = temp.join("source");
+    fs::create_dir(&source).unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../infra/tests/fixtures/mp3/japanese.mp3");
+    fs::copy(&fixture, source.join("one.mp3")).unwrap();
+    fs::copy(&fixture, source.join("two.mp3")).unwrap();
+    fs::write(source.join("broken.mp3"), b"not audio").unwrap();
+    let database = temp.join("doctor.db");
+    let db = database.to_str().unwrap();
+    let output = run(&[
+        "--output",
+        "json",
+        "--events",
+        "jsonl",
+        "doctor",
+        "scan",
+        "--source",
+        source.to_str().unwrap(),
+        "--db",
+        db,
+    ]);
+    assert_eq!(output.status.code(), Some(4));
+    let envelope = json_envelope(&output);
+    assert_common_envelope(&envelope, "doctor.scan");
+    assert_eq!(envelope["status"], "partial");
+    let id = envelope["data"]["doctor_run_id"].as_str().unwrap();
+    assert_eq!(envelope["correlation"]["attempt_id"], id);
+    assert_eq!(envelope["data"]["files"], 3);
+    let events: Vec<Value> = String::from_utf8(output.stderr)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    assert_eq!(events.last().unwrap()["event_type"], "terminal");
+    let output = run(&[
+        "--output",
+        "json",
+        "doctor",
+        "issues",
+        "--run-id",
+        id,
+        "--db",
+        db,
+        "--severity",
+        "critical",
+        "--code",
+        "read_failed",
+    ]);
+    assert!(output.status.success());
+    let issues = json_envelope(&output);
+    assert_eq!(issues["data"]["issues"].as_array().unwrap().len(), 1);
+    assert_eq!(issues["data"]["files"].as_array().unwrap().len(), 1);
+    let output = run(&[
+        "--output",
+        "json",
+        "doctor",
+        "duplicates",
+        "--run-id",
+        id,
+        "--db",
+        db,
+    ]);
+    let groups = json_envelope(&output);
+    assert_eq!(groups["data"]["issues"][0]["code"], "exact_duplicate");
+    assert_eq!(groups["data"]["files"].as_array().unwrap().len(), 2);
+    for command in ["show", "albums"] {
+        let output = run(&[
+            "--output", "json", "doctor", command, "--run-id", id, "--db", db,
+        ]);
+        assert!(output.status.success());
+        json_envelope(&output);
+    }
+    let output = run(&[
+        "--output", "json", "doctor", "issues", "--run-id", id, "--db", db, "--code", "nonsense",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(json_envelope(&output)["command"], "doctor.issues");
+    assert_eq!(
+        fs::read(source.join("one.mp3")).unwrap(),
+        fs::read(fixture).unwrap()
+    );
+}
+
 fn run_with_env(arguments: &[&str], key: &str, value: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_music-folder"))
         .args(arguments)

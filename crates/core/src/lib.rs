@@ -13,3 +13,5 @@ pub use execution::*;
 pub use path_policy::*;
 pub use preflight::*;
 pub use snapshot::*;
+
+pub mod doctor;

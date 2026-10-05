@@ -20,56 +20,7 @@ impl FileSystem for LocalFileSystem {
         follow_links: bool,
         visitor: &mut dyn FnMut(Result<PathBuf, String>) -> bool,
     ) -> Result<(), String> {
-        if !root.is_dir() {
-            return Err("scan_root_not_found".into());
-        }
-        for entry in WalkDir::new(root).follow_links(follow_links) {
-            let entry = match entry {
-                Ok(value) => value,
-                Err(error) => {
-                    if !visitor(Err(error.to_string())) {
-                        break;
-                    }
-                    continue;
-                }
-            };
-            if is_reparse_path(entry.path())? && !follow_links {
-                if !visitor(Err(format!(
-                    "reparse_point_skipped:{}",
-                    entry.path().display()
-                ))) {
-                    break;
-                }
-                continue;
-            }
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            if matches!(
-                entry
-                    .path()
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .map(str::to_ascii_lowercase)
-                    .as_deref(),
-                Some(
-                    "flac"
-                        | "mp3"
-                        | "m4a"
-                        | "ogg"
-                        | "jpg"
-                        | "jpeg"
-                        | "png"
-                        | "webp"
-                        | "gif"
-                        | "bmp"
-                )
-            ) && !visitor(Ok(entry.into_path()))
-            {
-                break;
-            }
-        }
-        Ok(())
+        enumerate_paths(root, follow_links, false, visitor)
     }
     fn fingerprint(&self, path: &Path) -> Result<FileFingerprint, String> {
         fingerprint_file(path)
@@ -967,7 +918,7 @@ fn hash_file(path: &Path) -> Result<String, String> {
     hash_open_file(&mut file)
 }
 
-fn hash_open_file(file: &mut File) -> Result<String, String> {
+pub(crate) fn hash_open_file(file: &mut File) -> Result<String, String> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 128 * 1024];
     loop {
@@ -1015,7 +966,7 @@ fn native_file_identity(path: &Path, _metadata: &fs::Metadata) -> Option<String>
 }
 
 #[cfg(windows)]
-fn native_file_identity_from_file(
+pub(crate) fn native_file_identity_from_file(
     file: &File,
     _path: &Path,
     _metadata: &fs::Metadata,
@@ -1071,7 +1022,7 @@ fn native_file_identity(_path: &Path, metadata: &fs::Metadata) -> Option<String>
 }
 
 #[cfg(unix)]
-fn native_file_identity_from_file(
+pub(crate) fn native_file_identity_from_file(
     _file: &File,
     _path: &Path,
     metadata: &fs::Metadata,
@@ -1086,7 +1037,7 @@ fn native_file_identity(_path: &Path, _metadata: &fs::Metadata) -> Option<String
 }
 
 #[cfg(not(any(windows, unix)))]
-fn native_file_identity_from_file(
+pub(crate) fn native_file_identity_from_file(
     _file: &File,
     _path: &Path,
     _metadata: &fs::Metadata,
@@ -1135,13 +1086,101 @@ fn is_reparse_path(path: &Path) -> Result<bool, String> {
 }
 
 #[cfg(windows)]
-fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
+pub(crate) fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
+pub(crate) fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
+}
+
+/// Doctor shares the scanner and fingerprint policy, with additional reader formats.
+pub struct DoctorFileSystem;
+impl FileSystem for DoctorFileSystem {
+    fn enumerate(
+        &self,
+        root: &Path,
+        _follow_links: bool,
+        visitor: &mut dyn FnMut(Result<PathBuf, String>) -> bool,
+    ) -> Result<(), String> {
+        enumerate_paths(root, false, true, visitor)
+    }
+    fn fingerprint(&self, path: &Path) -> Result<FileFingerprint, String> {
+        LocalFileSystem.ensure_no_reparse_points(path)?;
+        fingerprint_file(path)
+    }
+}
+fn enumerate_paths(
+    root: &Path,
+    follow_links: bool,
+    doctor: bool,
+    visitor: &mut dyn FnMut(Result<PathBuf, String>) -> bool,
+) -> Result<(), String> {
+    if !root.is_dir() {
+        return Err("scan_root_not_found".into());
+    }
+    if !follow_links {
+        LocalFileSystem.ensure_no_reparse_points(root)?;
+    }
+    let mut walker = WalkDir::new(root).follow_links(follow_links).into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(error) => {
+                if !visitor(Err(error.to_string())) {
+                    break;
+                }
+                continue;
+            }
+        };
+        let reparse = match is_reparse_path(entry.path()) {
+            Ok(value) => value,
+            Err(error) => {
+                if entry.file_type().is_dir() {
+                    walker.skip_current_dir();
+                }
+                if !visitor(Err(format!(
+                    "metadata_unavailable:{}:{error}",
+                    entry.path().display()
+                ))) {
+                    break;
+                }
+                continue;
+            }
+        };
+        if reparse && !follow_links {
+            if entry.file_type().is_dir() {
+                walker.skip_current_dir();
+            }
+            if !visitor(Err(format!(
+                "reparse_point_skipped:{}",
+                entry.path().display()
+            ))) {
+                break;
+            }
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let extension = entry
+            .path()
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(str::to_ascii_lowercase);
+        let supported = matches!(extension.as_deref(), Some("flac" | "mp3" | "m4a" | "ogg"))
+            || (doctor && matches!(extension.as_deref(), Some("aac" | "opus" | "wav")))
+            || (!doctor
+                && matches!(
+                    extension.as_deref(),
+                    Some("jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp")
+                ));
+        if supported && !visitor(Ok(entry.into_path())) {
+            break;
+        }
+    }
+    Ok(())
 }

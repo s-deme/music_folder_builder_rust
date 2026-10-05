@@ -352,6 +352,7 @@ fn contract_context(data: &Value) -> (Value, Value) {
     };
     let logical_run_id = string_field(&["root_scan_id", "scan_run_id", "plan_run_id", "run_id"]);
     let attempt_id = string_field(&[
+        "doctor_run_id",
         "execution_run_id",
         "verify_run_id",
         "rollback_run_id",
@@ -372,6 +373,9 @@ fn contract_context(data: &Value) -> (Value, Value) {
     if let Some(object) = object {
         for name in [
             "files",
+            "failures",
+            "issue_count",
+            "cache_hits",
             "items",
             "success",
             "skipped",

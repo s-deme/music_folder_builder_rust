@@ -300,3 +300,5 @@ export async function conflictCommandMockContract() {
   }, "plan-1", "group-1");
   return { calls, failed, recoveredId: recovered.id };
 }
+
+export { DoctorPanel } from "./doctor";

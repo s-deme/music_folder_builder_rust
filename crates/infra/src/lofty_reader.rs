@@ -23,7 +23,11 @@ impl MetadataReader for LoftyMetadataReader {
             title: tag.and_then(|t| t.title()).map(Cow::into_owned),
             track_no: tag.and_then(|t| t.track()),
             disc_no: tag.and_then(|t| t.disk()),
-            year: tag.and_then(|t| t.year()).map(|v| v as i32),
+            year: tag
+                .and_then(|t| t.year())
+                .and_then(|v| i32::try_from(v).ok()),
+            genre: tag.and_then(|t| t.genre()).map(Cow::into_owned),
+            has_artwork: Some(tagged.tags().iter().any(|t| !t.pictures().is_empty())),
         })
     }
 }

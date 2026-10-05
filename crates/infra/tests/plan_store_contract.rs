@@ -507,6 +507,8 @@ fn metadata(title: &str, track_no: u32) -> TrackMetadata {
         track_no: Some(track_no),
         disc_no: Some(1),
         year: Some(2026),
+        genre: None,
+        has_artwork: None,
     }
 }
 

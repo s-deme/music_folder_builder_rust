@@ -4,3 +4,6 @@ pub mod path_codec;
 mod root_lock;
 pub mod sqlite;
 pub mod windows_fs;
+
+pub mod artwork;
+pub mod doctor_view;

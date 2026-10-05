@@ -45,6 +45,8 @@ fn plan(store: Arc<SqliteScanStore>, source: &Path, target_root: &Path) -> Strin
                     track_no: Some(1),
                     disc_no: Some(1),
                     year: Some(2026),
+                    genre: None,
+                    has_artwork: None,
                 }),
                 kind: FileKind::Music,
             }],

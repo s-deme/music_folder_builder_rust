@@ -50,6 +50,7 @@ import { RecoveryPanel } from "./recovery";
 import { PathValue } from "./paths";
 import "./styles.css";
 import "./naming.css";
+import { DoctorPanel } from "./doctor";
 
 const historyKindLabels: Record<string, string> = {
   scan: "スキャン",
@@ -267,6 +268,9 @@ const ja = {
 };
 
 export function App() {
+  const [appMode, setAppMode] = useState<"organize" | "doctor">("organize");
+  const [doctorOpened, setDoctorOpened] = useState(false);
+  const [doctorBusy, setDoctorBusy] = useState(false);
   const [workflow, dispatch] = useReducer(workflowReducer, initialWorkflowContext);
   const workflowGenerationRef = useRef(0);
   const activeScanRequestRef = useRef<string>();
@@ -327,7 +331,8 @@ export function App() {
   const attemptEvidenceRequestRef = useRef(0);
 
   const { scan, scanRequest, progress, plan, result: execution, executionId } = workflow;
-  const busy = workflow.busy || jobStarting;
+  const organizeBusy = workflow.busy || jobStarting;
+  const busy = organizeBusy || doctorBusy;
   const source = sourceSelection?.display ?? "";
   const target = targetSelection?.display ?? "";
   const currentCapabilities = workflowCapabilities?.workflow_generation === workflow.generation
@@ -378,6 +383,30 @@ export function App() {
     dispatch({ type: "failed", generation });
   }
 
+  async function adoptFolderSelection(purpose: "source" | "target", selected: FolderSelection) {
+    activeScanRequestRef.current = undefined;
+    invalidatePlanViews();
+    invalidateExecutionViews();
+    const generation = await invoke<number>("invalidate_workflow", {
+      keepScan: purpose === "target",
+      expectedWorkflowGeneration: workflowGenerationRef.current,
+    });
+    workflowGenerationRef.current = generation;
+    localStorage.removeItem("mfb.active-job");
+    if (purpose === "source") {
+      setSourceSelection(selected);
+      dispatch({ type: "source_changed", generation });
+    } else {
+      setTargetSelection(selected);
+      dispatch({ type: "target_changed", generation });
+    }
+  }
+
+  async function organizeDoctorFolder(selected: FolderSelection) {
+    await adoptFolderSelection("source", selected);
+    setAppMode("organize");
+  }
+
   async function chooseFolder(purpose: "source" | "target") {
     setPickingFolder(purpose);
     setError(undefined);
@@ -389,22 +418,7 @@ export function App() {
       });
       if (!selected) return;
 
-      activeScanRequestRef.current = undefined;
-      invalidatePlanViews();
-      invalidateExecutionViews();
-      const generation = await invoke<number>("invalidate_workflow", {
-        keepScan: purpose === "target",
-        expectedWorkflowGeneration: workflowGenerationRef.current,
-      });
-      workflowGenerationRef.current = generation;
-      localStorage.removeItem("mfb.active-job");
-      if (purpose === "source") {
-        setSourceSelection(selected);
-        dispatch({ type: "source_changed", generation });
-      } else {
-        setTargetSelection(selected);
-        dispatch({ type: "target_changed", generation });
-      }
+      await adoptFolderSelection(purpose, selected);
     } catch (reason) {
       setError(formatWorkflowError(reason));
     } finally {
@@ -1203,6 +1217,14 @@ export function App() {
         </label>
       </header>
 
+      <nav className="app-modes" role="tablist" aria-label="アプリの機能">
+        <button role="tab" aria-selected={appMode === "organize"} aria-controls="organizer-panel" onClick={() => setAppMode("organize")}>整理</button>
+        <button role="tab" aria-selected={appMode === "doctor"} aria-controls="diagnosis-panel" onClick={() => { setDoctorOpened(true); setAppMode("doctor"); }}>診断</button>
+      </nav>
+      <div id="diagnosis-panel" role="tabpanel" aria-label="ライブラリ診断" hidden={appMode !== "doctor"}>
+        {doctorOpened && <DoctorPanel ready={backendReady} visible={appMode === "doctor"} organizeBusy={organizeBusy} onBusy={setDoctorBusy} onOrganize={organizeDoctorFolder} />}
+      </div>
+      <div id="organizer-panel" className="organizer-panel" role="tabpanel" aria-label="音楽フォルダ整理" hidden={appMode !== "organize"}>
       {(recoveryLoading || recoveries.length > 0 || recoveryResult) && (
         <RecoveryPanel
           loading={recoveryLoading}
@@ -1554,6 +1576,7 @@ export function App() {
         </div>
       </section>
 
+      </div>
       <ConfirmDialog request={confirmation} onClose={() => setConfirmation(undefined)} />
       <TargetEditDialog request={targetEdit} onClose={() => setTargetEdit(undefined)} />
     </main>

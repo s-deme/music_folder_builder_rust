@@ -43,6 +43,8 @@ impl MetadataReader for DiscMetadataReader {
             track_no: Some(1),
             disc_no: Some(disc_no),
             year: None,
+            genre: None,
+            has_artwork: None,
         })
     }
 }

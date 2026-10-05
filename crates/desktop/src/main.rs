@@ -1,3 +1,4 @@
+mod doctor;
 use music_folder_core::ports::{ManualTargetChange, RecoveryStore};
 use music_folder_core::usecases::{
     ApplyUseCase, PlanOptions, PlanUseCase, RecoveryUseCase, RollbackUseCase, ScanOptions,
@@ -111,6 +112,7 @@ impl JobSnapshot {
 struct JobRegistryState {
     jobs: HashMap<String, JobSnapshot>,
     active_mutation_job_id: Option<String>,
+    active_reader_id: Option<String>,
 }
 
 #[derive(Default, Clone)]
@@ -134,12 +136,11 @@ impl JobRegistry {
     }
 
     fn has_active_mutation(&self) -> Result<bool, String> {
-        Ok(self
+        let state = self
             .0
             .lock()
-            .map_err(|_| "job registry poisoned".to_string())?
-            .active_mutation_job_id
-            .is_some())
+            .map_err(|_| "job registry poisoned".to_string())?;
+        Ok(state.active_mutation_job_id.is_some() || state.active_reader_id.is_some())
     }
 
     fn supersede(&self, job_id: &str) -> Result<(), String> {
@@ -210,7 +211,7 @@ fn reserve_external_mutation(registry: &JobRegistry) -> Result<ExternalMutationG
         .0
         .lock()
         .map_err(|_| "job registry poisoned".to_string())?;
-    if jobs.active_mutation_job_id.is_some() {
+    if jobs.active_mutation_job_id.is_some() || jobs.active_reader_id.is_some() {
         return Err("mutation_job_busy".into());
     }
     jobs.active_mutation_job_id = Some(id.clone());
@@ -518,7 +519,7 @@ fn begin_job(
         .0
         .lock()
         .map_err(|_| "job registry poisoned".to_string())?;
-    if jobs.active_mutation_job_id.is_some() {
+    if jobs.active_mutation_job_id.is_some() || jobs.active_reader_id.is_some() {
         return Err("mutation_job_busy".into());
     }
     if workflow.active_job_id.is_some() {
@@ -835,6 +836,14 @@ fn start_scan(
         if workflow.active_mutation_job_id.is_some() || jobs.has_active_mutation()? {
             return Err("mutation_job_busy".into());
         }
+        let mut activity = jobs
+            .0
+            .lock()
+            .map_err(|_| "job registry poisoned".to_string())?;
+        if activity.active_reader_id.is_some() || activity.active_mutation_job_id.is_some() {
+            return Err("workflow_job_busy".into());
+        }
+        activity.active_reader_id = Some(request_id.clone());
         let generation = workflow.workflow_generation.saturating_add(1);
         let superseded_job_id = workflow.active_job_id.clone();
         *workflow = WorkflowSessionState {
@@ -872,6 +881,7 @@ fn start_scan(
     let store = application.store.clone();
     let request_for_thread = request_id.clone();
     let session = session.inner().clone();
+    let jobs = jobs.inner().clone();
     std::thread::spawn(move || {
         let mut options = ScanOptions::default();
         if let Some(value) = workers {
@@ -956,6 +966,11 @@ fn start_scan(
                 workflow.plan_id = None;
                 workflow.execution_id = None;
                 workflow.view_only = false;
+            }
+        }
+        if let Ok(mut activity) = jobs.0.lock() {
+            if activity.active_reader_id.as_deref() == Some(&request_for_thread) {
+                activity.active_reader_id = None;
             }
         }
         let _ = app.emit("scan-finished", status);
@@ -1055,6 +1070,8 @@ fn preview_naming(naming: music_folder_core::NamingRules) -> music_folder_core::
             track_no: Some(3),
             disc_no: Some(1),
             year: Some(2026),
+            genre: None,
+            has_artwork: None,
         },
     )
 }
@@ -2196,6 +2213,7 @@ fn list_metrics(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(doctor::DoctorState::default())
         .manage(ScanRegistry::default())
         .manage(JobRegistry::default())
         .manage(WorkflowSession::default())
@@ -2216,6 +2234,18 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            doctor::start_doctor,
+            doctor::doctor_status,
+            doctor::cancel_doctor,
+            doctor::doctor_history,
+            doctor::open_doctor_view,
+            doctor::close_doctor_view,
+            doctor::doctor_issue_page,
+            doctor::doctor_issue_detail,
+            doctor::doctor_album_page,
+            doctor::doctor_album_detail,
+            doctor::doctor_artwork,
+            doctor::doctor_source_selection,
             desktop_backend_ready,
             get_workflow_capabilities,
             pick_folder,

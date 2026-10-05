@@ -189,6 +189,11 @@ pub struct TrackMetadata {
     pub track_no: Option<u32>,
     pub disc_no: Option<u32>,
     pub year: Option<i32>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    /// None means an older reader did not inspect artwork.
+    #[serde(default)]
+    pub has_artwork: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -805,6 +810,8 @@ mod tests {
             track_no: Some(3),
             disc_no: None,
             year: Some(2024),
+            genre: None,
+            has_artwork: None,
         };
         assert_eq!(
             render_template(
@@ -826,6 +833,8 @@ mod tests {
             track_no: Some(3),
             disc_no: Some(1),
             year: Some(2026),
+            genre: None,
+            has_artwork: None,
         };
         let preview = preview_naming(&NamingRules::default(), &metadata);
         assert!(preview.issues.is_empty());

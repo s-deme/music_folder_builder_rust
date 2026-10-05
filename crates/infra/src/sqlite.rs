@@ -33,11 +33,12 @@ mod rows;
 pub use rows::*;
 mod archive;
 mod diagnostics;
+mod doctor;
 mod migrations;
 
 const METADATA_READER_ID: &str = "lofty";
-const METADATA_READER_VERSION: &str = "lofty-v1";
-const METADATA_SCHEMA_VERSION: i64 = 1;
+const METADATA_READER_VERSION: &str = "lofty-v2";
+const METADATA_SCHEMA_VERSION: i64 = 2;
 const METADATA_READER_CONFIG_HASH: &str = "lofty-config-v1";
 const METADATA_FINGERPRINT_ALGORITHM: &str = "sha256-v1";
 const MUTATION_LEASE_TTL_SECONDS: i64 = 24 * 60 * 60;

@@ -34,6 +34,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Read-only music library diagnosis; writes results and cache to SQLite.
+    Doctor {
+        #[command(subcommand)]
+        command: DoctorCommand,
+    },
     Scan {
         #[arg(long)]
         source: PathBuf,
@@ -125,6 +130,7 @@ pub enum Command {
 impl Command {
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Doctor { command } => command.name(),
             Self::Scan { .. } => "scan",
             Self::Plan {
                 command: Some(PlanCommand::Revise { .. }),
@@ -141,6 +147,66 @@ impl Command {
             Self::Completions { .. } => "completions",
             Self::Man => "man",
         }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DoctorCommand {
+    Scan {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value = "music-folder.db")]
+        db: PathBuf,
+        #[arg(long, value_parser = parse_workers)]
+        workers: Option<usize>,
+    },
+    Show {
+        #[arg(long, value_parser = parse_identifier)]
+        run_id: String,
+        #[arg(long, default_value = "music-folder.db")]
+        db: PathBuf,
+    },
+    Issues {
+        #[arg(long, value_parser = parse_identifier)]
+        run_id: String,
+        #[arg(long, default_value = "music-folder.db")]
+        db: PathBuf,
+        #[arg(long, value_parser = ["critical", "warning", "info"])]
+        severity: Option<String>,
+        #[arg(long, value_parser = parse_doctor_code)]
+        code: Option<String>,
+    },
+    Duplicates {
+        #[arg(long, value_parser = parse_identifier)]
+        run_id: String,
+        #[arg(long, default_value = "music-folder.db")]
+        db: PathBuf,
+    },
+    Albums {
+        #[arg(long, value_parser = parse_identifier)]
+        run_id: String,
+        #[arg(long, default_value = "music-folder.db")]
+        db: PathBuf,
+    },
+}
+
+impl DoctorCommand {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Scan { .. } => "doctor.scan",
+            Self::Show { .. } => "doctor.show",
+            Self::Issues { .. } => "doctor.issues",
+            Self::Duplicates { .. } => "doctor.duplicates",
+            Self::Albums { .. } => "doctor.albums",
+        }
+    }
+}
+
+fn parse_doctor_code(value: &str) -> Result<String, String> {
+    if music_folder_core::doctor::ISSUE_CODES.contains(&value) {
+        Ok(value.into())
+    } else {
+        Err(format!("unknown doctor issue code: {value}"))
     }
 }
 
@@ -592,11 +658,16 @@ pub fn command_hint(arguments: &[OsString]) -> String {
             ("history", Some("delete")) => return "history.delete".into(),
             ("recovery", Some("list")) => return "recovery.list".into(),
             ("recovery", Some("run")) => return "recovery.run".into(),
+            ("doctor", Some("scan")) => return "doctor.scan".into(),
+            ("doctor", Some("show")) => return "doctor.show".into(),
+            ("doctor", Some("issues")) => return "doctor.issues".into(),
+            ("doctor", Some("duplicates")) => return "doctor.duplicates".into(),
+            ("doctor", Some("albums")) => return "doctor.albums".into(),
             ("diagnostics", Some("export")) => return "diagnostics.export".into(),
             ("diagnostics", Some("retention")) => return "diagnostics.retention".into(),
             (
                 "scan" | "plan" | "apply" | "verify" | "rollback" | "history" | "recovery"
-                | "diagnostics" | "benchmark" | "completions" | "man",
+                | "doctor" | "diagnostics" | "benchmark" | "completions" | "man",
                 _,
             ) => return value.to_string(),
             _ => {}

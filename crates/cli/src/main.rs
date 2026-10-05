@@ -1,5 +1,6 @@
 mod args;
 mod config;
+mod doctor;
 mod output;
 
 use args::{
@@ -248,6 +249,7 @@ fn confirm_destructive(action: &str) -> Result<(), CliFailure> {
 
 fn execute(command: Command) -> Result<CommandResult, CliFailure> {
     match command {
+        Command::Doctor { command } => doctor::execute(command),
         Command::Scan {
             source,
             db,
@@ -1397,7 +1399,7 @@ fn attach_scan_progress(options: &mut ScanOptions) {
 
 fn completions(shell: CompletionShell) -> CommandResult {
     const COMMANDS: &str =
-        "scan plan apply verify rollback history recovery diagnostics benchmark completions man";
+        "scan plan apply verify rollback history recovery diagnostics doctor benchmark completions man";
     let script = match shell {
         CompletionShell::Bash => format!("complete -W '{COMMANDS}' music-folder"),
         CompletionShell::Zsh => format!(
@@ -1432,6 +1434,8 @@ fn command_reference() -> CommandResult {
         "  recovery list        List non-terminal journal operations.\n",
         "  recovery run         Dry-run by default; --execute requires exact --confirm.\n",
         "  diagnostics export   Export schema-versioned diagnostics; paths are redacted by default.\n",
+        "  doctor scan --source SOURCE [--db DB]\n                       Diagnose without modifying music; saves results and cache.\n",
+        "  doctor show|issues|duplicates|albums --run-id ID [--db DB]\n                       Read saved diagnosis; issues accepts --severity and --code.\n",
         "  diagnostics retention\n                       Dry-run by default; --execute prunes a bounded eligible batch.\n",
         "  benchmark            Compare cold and warm scans.\n\nOUTPUT\n",
         "  --output human|json  JSON uses envelope schema_version 1. Progress is stderr-only.\n",

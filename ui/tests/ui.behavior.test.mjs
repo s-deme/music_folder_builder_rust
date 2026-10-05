@@ -96,6 +96,93 @@ const { clearMocks, mockIPC } = tauriMockModule;
 const { App, ConfirmDialog, ExistingTargetConflict, PlanConflictCard } = contracts;
 bootstrapEnvironment.restore();
 
+const doctorPath = { schema_version: 1, role: "source", display: "C:\\音楽", display_lossy: false, encoding: "windows-utf16le", raw_base64: "AA==" };
+const doctorEntry = (id, status = "Completed") => ({ run: { doctor_run_id: id, scan_run_id: `scan-${id}`, status, files: 10, cache_hits: 2, failures: status === "Partial" ? 1 : 0, issue_count: 1, rule_version: 1 }, source: doctorPath, started_at: 1_780_000_000, finished_at: status === "Running" ? null : 1_780_000_001 });
+const doctorPage = items => ({ items, total: items.length, next_cursor: null });
+function doctorIpc(command, args) {
+  if (command.startsWith("plugin:event|")) return 1;
+  switch (command) {
+    case "doctor_status": return null;
+    case "doctor_history": return doctorPage([doctorEntry("run-new", "Partial"), doctorEntry("run-old"), doctorEntry("run-incomplete", "Running")]);
+    case "open_doctor_view": return { history: doctorEntry(args.runId, args.runId === "run-new" ? "Partial" : "Completed"), severities: { critical: 1, warning: 0, info: 0 } };
+    case "close_doctor_view": return null;
+    case "doctor_issue_page": return doctorPage([{ ordinal: 0, code: "read_failed", severity: "critical", category: "read", file_count: 1 }]);
+    case "doctor_issue_detail": return { issue: { ordinal: 0, code: "read_failed", severity: "critical", category: "read", file_count: 1 }, evidence: ["read failed"], comparison: null, rule_version: 1, files: doctorPage([{ id: "file-1", path: doctorPath, metadata: null, format: "mp3", size_bytes: 10, mtime_ns: "1780000000000000000" }]) };
+    case "doctor_album_page": return doctorPage([{ id: "album-1", title: "アルバム", artist: "Artist", folder: doctorPath, tracks: 10, issue_count: 1, unclassified: false }]);
+    case "doctor_album_detail": return { album: { id: "album-1", title: "アルバム", artist: "Artist", folder: doctorPath, tracks: 10, issue_count: 0, unclassified: false }, files: doctorPage([]), issues: doctorPage([]) };
+    case "doctor_artwork": return { data_url: null, origin: null, source: null, note: "ジャケット画像なし" };
+    default: return defaultIpc(command);
+  }
+}
+
+test("doctor restores history, separates incomplete results, filters issues, and hands off only the folder", async () => {
+  const environment = installDom(); const calls = []; let handoff;
+  mockIPC((command, args) => {
+    calls.push({ command, args });
+    if (command === "doctor_source_selection") return { selection_id: "folder-token", display: doctorPath.display };
+    return doctorIpc(command, args);
+  });
+  const mounted = await mount(React.createElement(contracts.DoctorPanel, { ready: true, visible: true, organizeBusy: false, onBusy: () => {}, onOrganize: async selection => { handoff = selection; } }));
+  try {
+    await waitFor(() => mounted.container.textContent.includes("診断結果 · 部分失敗"), "saved partial diagnosis");
+    assert.match(mounted.container.textContent, /未完了（中断の可能性）/);
+    assert.match(mounted.container.textContent, /全ファイルを確認できたとは限りません/);
+    const critical = mounted.container.querySelector('.doctor-filters select');
+    await act(async () => { critical.value = "critical"; critical.dispatchEvent(new window.Event("change", { bubbles: true })); });
+    await waitFor(() => calls.some(c => c.command === "doctor_issue_page" && c.args.severity === "critical"), "severity filter");
+    await act(async () => mounted.container.querySelector('.doctor-issue').click());
+    await waitFor(() => mounted.container.textContent.includes("read failed"), "issue evidence");
+    assert.match(mounted.container.textContent, /Title未設定/);
+    await act(async () => buttonByText(mounted.container, "このフォルダを整理").click());
+    assert.equal(handoff.selection_id, "folder-token");
+    assert.equal(calls.some(c => c.command === "create_plan" || c.command === "start_scan"), false);
+  } finally { await mounted.unmount(); clearMocks(); environment.restore(); }
+});
+
+test("doctor discards delayed history responses and limits image requests to two", async () => {
+  const environment = installDom(); let resolveOld; let active = 0; let peak = 0; let loads = 0;
+  mockIPC((command, args) => {
+    if (command === "open_doctor_view" && args.runId === "run-old") return new Promise(resolve => { resolveOld = resolve; });
+    if (command === "doctor_album_page") return doctorPage(Array.from({ length: 5 }, (_, n) => ({ id: `album-${n}`, title: `アルバム${n}`, artist: "Artist", folder: doctorPath, tracks: 10, issue_count: 0, unclassified: false })));
+    if (command === "doctor_artwork") { active++; peak = Math.max(peak, active); return new Promise(resolve => setTimeout(() => { active--; loads++; resolve({ data_url: null, origin: "folder", source: doctorPath, note: "画像なし" }); }, 25)); }
+    return doctorIpc(command, args);
+  });
+  const mounted = await mount(React.createElement(contracts.DoctorPanel, { ready: true, visible: true, organizeBusy: false, onBusy: () => {}, onOrganize: async () => {} }));
+  try {
+    await waitFor(() => mounted.container.textContent.includes("診断結果 · 部分失敗"), "initial results");
+    const history = [...mounted.container.querySelectorAll('.doctor-history-entry')];
+    await act(async () => history[1].click()); await waitFor(() => resolveOld, "delayed old result request");
+    await act(async () => history[0].click()); await waitFor(() => mounted.container.textContent.includes("診断結果 · 部分失敗"), "new result selection");
+    await act(async () => resolveOld({ history: doctorEntry("run-old"), severities: { critical: 999, warning: 0, info: 0 } }));
+    assert.equal(mounted.container.textContent.includes("999"), false);
+    await act(async () => buttonByText(mounted.container, "アルバム").click());
+    await waitFor(() => loads === 5, "on-demand album images"); assert.equal(peak, 2);
+    assert.match(mounted.container.textContent, /フォルダ画像/);
+    assert.equal(mounted.container.querySelectorAll('.doctor-album').length, 5);
+  } finally { await mounted.unmount(); clearMocks(); environment.restore(); }
+});
+
+test("doctor cancellation settles through status polling when terminal events are lost", async () => {
+  const environment = installDom(); const busyValues = []; let cancel = false; let launched = false;
+  mockIPC((command, args) => {
+    if (command === "pick_folder") return { selection_id: "folder-1", display: doctorPath.display };
+    if (command === "start_doctor") { launched = true; return { request_id: "request-1", status: "running", doctor_run_id: "run-new", progress: null, error: null }; }
+    if (command === "cancel_doctor") { cancel = true; return null; }
+    if (command === "doctor_status" && launched) return { request_id: "request-1", status: cancel ? "cancelled" : "running", doctor_run_id: "run-new", progress: null, error: null };
+    return doctorIpc(command, args);
+  });
+  const onBusy = value => busyValues.push(value);
+  const mounted = await mount(React.createElement(contracts.DoctorPanel, { ready: true, visible: true, organizeBusy: false, onBusy, onOrganize: async () => {} }));
+  try {
+    await act(async () => buttonByText(mounted.container, "参照…").click());
+    await act(async () => buttonByText(mounted.container, "診断を開始").click());
+    assert.equal(busyValues.at(-1), true);
+    await act(async () => buttonByText(mounted.container, "診断を取消").click());
+    await waitFor(() => mounted.container.querySelector('.doctor-progress')?.textContent.includes("取消済み"), "cancelled polling snapshot");
+    assert.equal(busyValues.at(-1), false); assert.equal(buttonByText(mounted.container, "診断を取消").disabled, true);
+  } finally { await mounted.unmount(); clearMocks(); environment.restore(); }
+});
+
 async function mount(element) {
   const container = document.createElement("div");
   document.body.append(container);

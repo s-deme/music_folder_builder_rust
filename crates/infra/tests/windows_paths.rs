@@ -56,10 +56,19 @@ fn reparse_directory_is_not_followed_by_default() {
     match symlink_dir(&outside, library.join("linked")) {
         Ok(()) => {}
         Err(error) if error.raw_os_error() == Some(1314) => {
-            eprintln!(
-                "skipping reparse enumeration assertion: this Windows account lacks SeCreateSymbolicLinkPrivilege"
+            // Junction creation needs no symlink privilege, and exercises the
+            // Windows directory reparse traversal guard instead of skipping it.
+            let output = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(library.join("linked"))
+                .arg(&outside)
+                .output()
+                .expect("create test junction");
+            assert!(
+                output.status.success(),
+                "junction creation failed: {:?}",
+                output
             );
-            return;
         }
         Err(error) => panic!("Windows CI must permit symlink creation: {error}"),
     }

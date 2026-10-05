@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -105,7 +105,7 @@ test("conflict command boundary exposes deterministic failure and retry", async 
 
 test("every statically invoked UI command is registered by the Tauri handler", () => {
   const repository = fileURLToPath(new URL("../..", import.meta.url));
-  const uiSource = readFileSync(`${repository}/ui/src/main.tsx`, "utf8");
+  const uiSource = readdirSync(`${repository}/ui/src`).filter(name => /\.tsx?$/.test(name)).map(name => readFileSync(`${repository}/ui/src/${name}`, "utf8")).join("\n");
   const desktopSource = readFileSync(`${repository}/crates/desktop/src/main.rs`, "utf8");
   const handler = desktopSource.match(/\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
   assert.ok(handler, "the Tauri handler declaration must remain discoverable");
